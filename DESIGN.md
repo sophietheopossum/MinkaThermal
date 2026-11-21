@@ -522,7 +522,7 @@ fan_ss < R_fan − 400 **and** T_ss ≥ R_T − 1 raises FAN with "fan slower th
 ### 11.1 Location
 - **state.json path:** `$MINKA_THERMAL_STATE`, else `$XDG_STATE_HOME/minka-thermal/state.json`, else `~/.local/state/minka-thermal/state.json`.
 - **Every other file lives beside state.json**, so one variable moves the whole store.
-- **Socket:** `$MINKA_THERMAL_SOCKET`, else `$XDG_RUNTIME_DIR/minka-thermal.sock`.
+- **Socket:** `$MINKA_THERMAL_SOCKET`, else `$XDG_RUNTIME_DIR/minka-thermal.sock`. When `$MINKA_THERMAL_STATE` is set and `$MINKA_THERMAL_SOCKET` is not, the socket is `minka-thermal.sock` beside the moved store, so a test store never reaches the live service (the GUI resolves it the same way).
 - **XDG_STATE_HOME** is unset today, both in her session and in the user manager. If it is ever set, it must be set in both places (`systemctl --user import-environment XDG_STATE_HOME`).
 - **Never export the test variables** from `shojiwm-env.fish`; the unit does not see fish's environment anyway.
 

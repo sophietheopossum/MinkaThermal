@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Name=MinkaThermal
+GenericName=Cooling Monitor
+Comment=Warns when the laptop needs cleaning and checks that a clean worked
+Exec=minka-thermal ui
+Icon=temperature-normal
+Terminal=false
+Categories=System;Monitor;
+Keywords=thermal;temperature;fan;dust;clean;cooling;throttle;minka;
+StartupWMClass=minka-thermal
+Actions=check;history;
+
+[Desktop Action check]
+Name=Run cooling check
+Exec=minka-thermal ui --page check
+
+[Desktop Action history]
+Name=Cleaning history
+Exec=minka-thermal ui --page history

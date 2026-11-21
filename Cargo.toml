@@ -1,0 +1,23 @@
+[package]
+name = "minka-thermal"
+version = "0.1.0"
+edition = "2024"
+description = "MinkaThermal: a cooling watch that warns when the laptop needs cleaning and checks that a clean worked"
+license = "MIT"
+
+# The library holds every module so that tests/seed.rs and tests/rules.rs can drive episodes and
+# rules directly; the binary is only the verb dispatch.
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "minka-thermal"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"

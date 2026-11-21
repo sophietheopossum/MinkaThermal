@@ -1,0 +1,27 @@
+[Unit]
+Description=MinkaThermal cooling watch
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/minka-thermal service
+Restart=on-failure
+RestartSec=5
+# 4 = another instance owns the store or socket; restarting cannot help.
+RestartPreventExitStatus=4
+# nice 0 on purpose: the check's load must get the CPU; her apps run at -4 and the compositor at -12.
+Nice=0
+TimerSlackNSec=50ms
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryMax=96M
+TasksMax=64
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+# The check's load generator lives in this cgroup and goes with it.
+KillMode=control-group
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target
