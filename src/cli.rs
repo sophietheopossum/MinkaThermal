@@ -11,7 +11,7 @@ use crate::model::{
 use crate::paths::Paths;
 use crate::profile::{self, Chassis, ConfigKey, DUO};
 use crate::references::KeyView;
-use crate::rules::{JudgeCtx, judge_light, judge_plateau};
+use crate::rules::{JudgeCtx, LIGHT_LOAD_EVIDENCE, judge_light, judge_plateau};
 use crate::sampler::{busy_fraction, scan_comms};
 use crate::sensors::{self, Sensors, StaticInfo};
 use crate::{note, present, store};
@@ -942,7 +942,10 @@ pub fn format_status(s: &State, alive: bool) -> String {
             l.voting, l.needed, l.days, l.needed_days
         )
     };
-    let light = if l.light_windows >= l.light_needed {
+    // No E2 among known classes: light load is not judged (off since 21/11/2026, or no counter).
+    let light = if !s.classes.is_empty() && !s.classes.iter().any(|c| c == "E2") {
+        "off".to_owned()
+    } else if l.light_windows >= l.light_needed {
         format!("{}/{} learned", l.light_windows, l.light_needed)
     } else {
         format!("{}/{}", l.light_windows, l.light_needed)
@@ -1107,7 +1110,8 @@ fn count(n: usize, one: &str, many: &str) -> String {
 }
 
 /// `chassis` and `board` are the machine's: from state.json when there is one, else resolved as
-/// the service would resolve them.
+/// the service would resolve them. `light_load_evidence` is the rules' (`LIGHT_LOAD_EVIDENCE`):
+/// while it is off, no day is an E2 day.
 pub fn replay_report(
     state: Option<&State>,
     (chassis, board): (Chassis, &str),
@@ -1115,6 +1119,7 @@ pub fn replay_report(
     records: &[Record],
     daily: &[DailyRecord],
     since: Option<Date>,
+    light_load_evidence: bool,
 ) -> String {
     let fans: Vec<f64> = records
         .iter()
@@ -1125,7 +1130,7 @@ pub fn replay_report(
         .collect();
     let ctx = JudgeCtx {
         has_fan: !fans.is_empty(),
-        has_throttle: state.is_none_or(|s| s.classes.is_empty() || s.classes.iter().any(|c| c == "E2")),
+        has_throttle: state.is_none_or(State::has_throttle_counter),
         fan_auto_max: if chassis == Chassis::Duo {
             Some(DUO.fan_auto_max as f64)
         } else if fans.len() >= 3 {
@@ -1210,7 +1215,7 @@ pub fn replay_report(
         }
         let (voting, hot, clean, hot_windows) = days.get(&line.day).copied().unwrap_or_default();
         let e1 = hot >= 1 && hot >= clean;
-        let e2 = hot_windows >= crate::rules::E2_DAY_WINDOWS;
+        let e2 = light_load_evidence && hot_windows >= crate::rules::E2_DAY_WINDOWS;
         let yes = |b: bool| if b { "yes" } else { "no" };
         if e1 != line.e1 || e2 != line.e2 {
             lines.push(format!(
@@ -1290,6 +1295,7 @@ fn replay(paths: &Paths, root: &Path, since: Option<Date>) -> i32 {
         &records,
         &daily,
         since,
+        LIGHT_LOAD_EVIDENCE,
     ));
     EXIT_OK
 }
@@ -1355,7 +1361,7 @@ fn sensors(paths: &Paths, root: &Path) -> i32 {
     );
     t += &format!(
         "classes   {}{}\n",
-        s.classes().join(" "),
+        s.classes(LIGHT_LOAD_EVIDENCE).join(" "),
         if s.has_fan() {
             " · fan rules on"
         } else {
@@ -1593,7 +1599,8 @@ fan ok 6800 rpm · fault none · notices none · unjudged 30 d: too_short 31, un
             ..DailyRecord::default()
         }];
         let duo = (Chassis::Duo, "UX482EG");
-        let text = replay_report(Some(&state), duo, &References::default(), &records, &daily, None);
+        let text =
+            replay_report(Some(&state), duo, &References::default(), &records, &daily, None, true);
         // No light reference in an empty references.json: the window no longer votes hot.
         assert_eq!(
             text,
@@ -1602,6 +1609,89 @@ fan ok 6800 rpm · fault none · notices none · unjudged 30 d: too_short 31, un
              3/12/2026 14:00  build 90.4 °C 6.8 %: neutral → hot\n\
              3/12/2026 15:00  light load 0.0 threads, 40.0 % hot: hot → neutral\n\
              3/12/2026  evidence day: build no → yes, light load no → no (2 comparable builds)\n"
+        );
+    }
+
+    #[test]
+    fn replay_counts_no_e2_day_while_light_load_evidence_is_off() {
+        use crate::clock::Stamp;
+        use crate::model::{LightRecord, LightRef};
+        let key = "ac|performance|performance|28|35|8|0|100|open";
+        let at = |m: i64| Stamp::at(Date::new(2026, 12, 3).unwrap().days() * 86_400 + 14 * 3600 + m * 60, 0);
+        // Ten hot windows against a learned light reference: an E2 day while it was on.
+        let records: Vec<Record> = (0..10)
+            .map(|m| {
+                Record::Light(LightRecord {
+                    start: at(m),
+                    key_id: key.into(),
+                    seconds: 60.0,
+                    hot_ms: 24_000,
+                    verdict: LightVerdict::Hot,
+                    ..LightRecord::default()
+                })
+            })
+            .collect();
+        let mut refs = References::default();
+        refs.keys.entry(key.into()).or_default().light = Some(LightRef {
+            n: 300,
+            p90: Some(0.002),
+            ..LightRef::default()
+        });
+        let line = |e2| DailyRecord {
+            day: "2026-12-03".into(),
+            e2,
+            ..DailyRecord::default()
+        };
+        let duo = (Chassis::Duo, "UX482EG");
+        let replay = |e2_line, on| replay_report(None, duo, &refs, &records, &[line(e2_line)], None, on);
+        assert!(replay(true, true).ends_with("no verdict would change\n"));
+        assert!(replay(false, false).ends_with("no verdict would change\n"));
+        // A line written while it was on is no E2 day now.
+        assert!(
+            replay(true, false).contains("3/12/2026  evidence day: build no → no, light load yes → no"),
+            "{}",
+            replay(true, false)
+        );
+    }
+
+    #[test]
+    fn replay_reads_the_throttle_counter_not_the_classes() {
+        use crate::clock::Stamp;
+        use crate::model::PlateauRecord;
+        let at = Stamp::at(Date::new(2026, 12, 3).unwrap().days() * 86_400 + 14 * 3600, 0);
+        // Hot by its throttle duty against the seed. Judged as if there were no counter, it would
+        // need a frequency it does not have, and read neutral.
+        let records = vec![Record::Plateau(Box::new(PlateauRecord {
+            onset: at.clone(),
+            end: at,
+            key_id: "ac|performance|performance|28|35|8|0|100|open".into(),
+            t_ss: Some(90.4),
+            duty: Some(0.068),
+            fan_med: Some(6800.0),
+            verdict: PlateauVerdict::Hot,
+            ..PlateauRecord::default()
+        }))];
+        let mut state: State = serde_json::from_str(WARNING_EXAMPLE).unwrap();
+        // As the service writes it with light-load evidence off: no E2 among the classes.
+        state.classes = vec!["E1".into(), "check".into()];
+        state.throttle_counter = Some(true);
+        let duo = (Chassis::Duo, "UX482EG");
+        let replay = |s: &State| {
+            replay_report(Some(s), duo, &References::default(), &records, &[], None, false)
+        };
+        assert!(replay(&state).ends_with("no verdict would change\n"), "{}", replay(&state));
+        state.throttle_counter = Some(false);
+        assert!(replay(&state).contains("hot → neutral"), "{}", replay(&state));
+    }
+
+    #[test]
+    fn status_says_light_load_is_off_without_e2() {
+        let mut state: State = serde_json::from_str(WARNING_EXAMPLE).unwrap();
+        state.classes = vec!["E1".into(), "check".into()];
+        let text = format_status(&state, true);
+        assert!(
+            text.contains("reference duo-seed 20/11/2026 (passive: learning 3/8 builds, 2/3 days; light load off)\n"),
+            "{text}"
         );
     }
 

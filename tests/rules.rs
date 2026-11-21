@@ -6,11 +6,13 @@ use minka_thermal::clock::{Date, Moment, Stamp, Timeline};
 use minka_thermal::episodes::Output;
 use minka_thermal::model::{
     CaseOutcome, CaseRecord, CheckPurpose, CheckRef, CheckVerdict, DailyRecord, Event, EventKind,
-    FanStatus, FaultStatus, LightRef, Notice, PlateauRecord, PlateauVerdict, PostClean, Record,
-    References, State, Status, Tone, UnjudgedRecord,
+    FanStatus, FaultStatus, LightRecord, LightRef, LightVerdict, Notice, PlateauRecord,
+    PlateauVerdict, PostClean, Record, References, State, Status, Tone, UnjudgedRecord,
 };
 use minka_thermal::profile::{Chassis, ChassisSetting};
-use minka_thermal::rules::{CheckMetrics, CheckOutcome, Effect, Engine, KeyCtx, Machine, Watch};
+use minka_thermal::rules::{
+    CheckMetrics, CheckOutcome, Effect, Engine, KeyCtx, LIGHT_LOAD_EVIDENCE, Machine, Watch,
+};
 use minka_thermal::sampler::{Deriver, Raw, Row};
 use minka_thermal::sensors::{ConfigRead, CpuTimes, PowerRead, StaticInfo, XeRead};
 
@@ -53,7 +55,18 @@ fn machine(chassis: Chassis) -> Machine {
         tjmax_c: Some(100.0),
         has_fan: true,
         has_throttle: true,
+        light_load_evidence: LIGHT_LOAD_EVIDENCE,
+        // What the sensors support; `Engine::new` drops E2 while light-load evidence is off.
         classes: vec!["E1".into(), "E2".into(), "check".into()],
+    }
+}
+
+/// The machine with light-load evidence (E2) on. It is off by her decision of 21/11/2026; the
+/// tests of the E2 rules run with it on, so the rules stay guarded for the day it comes back.
+fn machine_e2(chassis: Chassis) -> Machine {
+    Machine {
+        light_load_evidence: true,
+        ..machine(chassis)
     }
 }
 
@@ -81,13 +94,27 @@ impl Rig {
         Rig::with(Chassis::Duo, her_config())
     }
 
+    /// `duo` with light-load evidence (E2) on: for the tests of the E2 rules (see `machine_e2`).
+    fn duo_e2() -> Rig {
+        Rig::on(
+            machine_e2(Chassis::Duo),
+            her_config(),
+            Timeline::starting(dec(1), 8, 0, 0, 0),
+        )
+    }
+
     fn with(chassis: Chassis, config: ConfigRead) -> Rig {
         Rig::at(chassis, config, Timeline::starting(dec(1), 8, 0, 0, 0))
     }
 
     /// Set up as `with`, on the timeline given (another start or another UTC offset).
     fn at(chassis: Chassis, config: ConfigRead, tl: Timeline) -> Rig {
-        let engine = Engine::new(machine(chassis), None, References::default(), &tl.now());
+        Rig::on(machine(chassis), config, tl)
+    }
+
+    /// Set up as `at`, on the machine given.
+    fn on(machine: Machine, config: ConfigRead, tl: Timeline) -> Rig {
+        let engine = Engine::new(machine, None, References::default(), &tl.now());
         let mut rig = Rig {
             tl,
             deriver: Deriver::default(),
@@ -160,11 +187,21 @@ impl Rig {
     /// The service stops now and starts again at `date` `h`:00 (the offset unchanged). The new
     /// rig keeps the old effects, so the history reads as one.
     fn restart(self, date: Date, h: u32) -> Rig {
+        let light = self.watch.engine.machine.light_load_evidence;
+        self.restart_as(date, h, light)
+    }
+
+    /// `restart`, into a build whose light-load evidence is `light_load_evidence`.
+    fn restart_as(self, date: Date, h: u32, light_load_evidence: bool) -> Rig {
         let (state, refs, daily, records, cases, events) = self.store();
         let offset = self.now().offset_s;
         let tl = Timeline::starting(date, h, 0, 0, offset);
         let now = tl.now();
-        let mut engine = Engine::new(machine(Chassis::Duo), Some(state), refs, &now);
+        let machine = Machine {
+            light_load_evidence,
+            ..machine(Chassis::Duo)
+        };
+        let mut engine = Engine::new(machine, Some(state), refs, &now);
         engine.restore(&daily, &records, &cases, &events, &now);
         Rig {
             tl,
@@ -303,9 +340,29 @@ impl Rig {
         self.idle(5);
     }
 
-    /// An E2 evidence day: 13 minutes at 91 °C, 40 % throttled (the dust of 17/11/2026).
+    /// An E2 evidence day with light-load evidence on: 13 minutes at 91 °C, 40 % throttled (the
+    /// dust of 17/11/2026).
     fn hot_light(&mut self) {
         self.light(13, 91.0, 0.4);
+    }
+
+    /// bch-reconcile alone at nice 19, as on her clean machine on 21/11/2026: about one core,
+    /// 88 °C, 45 % throttled, the fan on its 6100 stage.
+    fn reconcile_light(&mut self, mins: u32) {
+        for _ in 0..mins * 60 {
+            self.tick(0.125, 88.0, 450, 6100);
+        }
+        self.idle(5);
+    }
+
+    fn light_records(&self) -> Vec<LightRecord> {
+        self.effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Record(Record::Light(l)) => Some(l.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The laptop sleeps until two minutes before `date` `h`:`m`, then idles up to it. The first
@@ -585,7 +642,8 @@ fn warning_route_a_waits_a_day_after_a_case_opened_by_a_check() {
     assert_eq!(r.status(), Status::Watch);
 }
 
-/// Days 1-3 hot builds, day 4 an E2 day, day 5 a hot build.
+/// Days 1-3 hot builds, day 4 an E2 day (with light-load evidence on, `Rig::duo_e2`), day 5 a
+/// hot build.
 fn five_evidence_days(r: &mut Rig) {
     r.learned_light();
     for d in [1, 2, 3] {
@@ -600,7 +658,8 @@ fn five_evidence_days(r: &mut Rig) {
 
 #[test]
 fn warning_route_b() {
-    let mut r = Rig::duo();
+    // E2 on: route (b) needs an E2 day.
+    let mut r = Rig::duo_e2();
     five_evidence_days(&mut r);
     assert_eq!(r.status(), Status::Suspicion);
     let case = r.state().case.clone().unwrap();
@@ -619,7 +678,8 @@ fn warning_route_b() {
 
 #[test]
 fn warning_route_c() {
-    let mut r = Rig::duo();
+    // E2 on: route (c) is E2 days alone.
+    let mut r = Rig::duo_e2();
     r.learned_light();
     r.goto(dec(1), 14, 0);
     r.hot_light();
@@ -674,7 +734,8 @@ fn warning_route_d_plateaus_only() {
 
 #[test]
 fn the_r2_guard_blocks_passive_escalation() {
-    let mut r = Rig::duo();
+    // E2 on: the guard is shown on route (b).
+    let mut r = Rig::duo_e2();
     r.learned_light();
     for d in [1, 2, 3] {
         r.goto(dec(d), 10, 0);
@@ -739,7 +800,8 @@ fn watch_lapses_after_14_quiet_days() {
     assert_eq!(r.status(), Status::Watch);
 }
 
-/// WARNING on day 3 by route (c), then cleaned that afternoon.
+/// WARNING on day 3 by route (c), then cleaned that afternoon. Needs light-load evidence on
+/// (`Rig::duo_e2`).
 fn cleaned_after_warning(r: &mut Rig) {
     r.learned_light();
     for d in [1, 2, 3] {
@@ -754,7 +816,8 @@ fn cleaned_after_warning(r: &mut Rig) {
 
 #[test]
 fn cleaned_removes_the_pill_at_once() {
-    let mut r = Rig::duo();
+    // E2 on: `cleaned_after_warning` warns by route (c).
+    let mut r = Rig::duo_e2();
     cleaned_after_warning(&mut r);
     // No tick in between: the pill is gone the moment she says so.
     let s = r.state();
@@ -784,7 +847,8 @@ fn cleaned_removes_the_pill_at_once() {
 
 #[test]
 fn passive_verification_not_improved_relatches_the_same_case() {
-    let mut r = Rig::duo();
+    // E2 on: `cleaned_after_warning` warns by route (c).
+    let mut r = Rig::duo_e2();
     cleaned_after_warning(&mut r);
     let case = r.state().case.clone().unwrap();
     for d in 4..=8 {
@@ -821,7 +885,8 @@ fn passive_verification_not_improved_relatches_the_same_case() {
 
 #[test]
 fn passive_verification_verified_by_builds() {
-    let mut r = Rig::duo();
+    // E2 on: `cleaned_after_warning` warns by route (c).
+    let mut r = Rig::duo_e2();
     cleaned_after_warning(&mut r);
     for d in 4..=8 {
         r.goto(dec(d), 10, 0);
@@ -848,7 +913,8 @@ fn passive_verification_verified_by_builds() {
 
 #[test]
 fn passive_verification_unverified() {
-    let mut r = Rig::duo();
+    // E2 on: `cleaned_after_warning` warns by route (c).
+    let mut r = Rig::duo_e2();
     cleaned_after_warning(&mut r);
     for d in [4, 5] {
         r.goto(dec(d), 10, 0);
@@ -866,7 +932,8 @@ fn passive_verification_unverified() {
 
 #[test]
 fn not_dust_accepts_uncapped_until_the_next_clean() {
-    let mut r = Rig::duo();
+    // E2 on: `five_evidence_days` warns by route (b).
+    let mut r = Rig::duo_e2();
     five_evidence_days(&mut r);
     r.goto(dec(6), 9, 0);
     assert_eq!(r.status(), Status::Warning);
@@ -1296,7 +1363,8 @@ fn firmware_and_settings_changes_are_logged() {
 #[test]
 fn verify_check_outcomes() {
     // Restored: the case closes as verified clean, and R_active follows the check.
-    let mut r = Rig::duo();
+    // E2 on: `cleaned_after_warning` warns by route (c).
+    let mut r = Rig::duo_e2();
     cleaned_after_warning(&mut r);
     assert!(
         r.events(EventKind::Cleaned)[0].starts_with("Cleaned 3/12/2026: the warning is cleared."),
@@ -1323,7 +1391,8 @@ fn verify_check_outcomes() {
     );
 
     // Improved: closed with how far it still is from the clean reference; R_active unchanged.
-    let mut r = Rig::duo();
+    // E2 on: `cleaned_after_warning` warns by route (c).
+    let mut r = Rig::duo_e2();
     cleaned_after_warning(&mut r);
     r.goto(dec(4), 10, 0);
     let mut o = r.outcome(CheckPurpose::Verify, CheckVerdict::Worse, Some(PostClean::Improved));
@@ -1341,7 +1410,8 @@ fn verify_check_outcomes() {
     assert_eq!(r.watch.engine.view(SEED_KEY).active.unwrap().source, "seed");
 
     // Not improved: WARNING again in the same case, worded by what the check measured.
-    let mut r = Rig::duo();
+    // E2 on: `cleaned_after_warning` warns by route (c).
+    let mut r = Rig::duo_e2();
     cleaned_after_warning(&mut r);
     let id = r.state().case.as_ref().unwrap().id.clone();
     r.goto(dec(4), 10, 0);
@@ -1366,7 +1436,8 @@ fn verify_check_outcomes() {
     );
 
     // Inconclusive: still verifying, no pill, nothing closed.
-    let mut r = Rig::duo();
+    // E2 on: `cleaned_after_warning` warns by route (c).
+    let mut r = Rig::duo_e2();
     cleaned_after_warning(&mut r);
     r.goto(dec(4), 10, 0);
     r.check(CheckPurpose::Verify, CheckVerdict::Inconclusive, None);
@@ -1403,7 +1474,8 @@ fn a_restored_check_outweighs_builds_earlier_that_day() {
 
 #[test]
 fn a_past_clean_date_counts_from_the_next_day() {
-    let mut r = Rig::duo();
+    // E2 on: route (c), and an E2 day after the clean date.
+    let mut r = Rig::duo_e2();
     r.learned_light();
     for d in [1, 2, 3] {
         r.goto(dec(d), 14, 0);
@@ -1437,7 +1509,8 @@ fn a_past_clean_date_counts_from_the_next_day() {
 #[test]
 fn a_before_check_in_warning() {
     // Like the reference: the notice, then R_before at the clean, which clears the notice.
-    let mut r = Rig::duo();
+    // E2 on: `five_evidence_days` warns by route (b).
+    let mut r = Rig::duo_e2();
     five_evidence_days(&mut r);
     r.goto(dec(6), 9, 0);
     assert_eq!(r.status(), Status::Warning);
@@ -1451,7 +1524,8 @@ fn a_before_check_in_warning() {
     assert_eq!((rb.source.as_str(), rb.t_ss), ("check", Some(86.2)));
 
     // Run anyway under another key: not comparable, so neither the notice nor R_before.
-    let mut r = Rig::duo();
+    // E2 on: `five_evidence_days` warns by route (b).
+    let mut r = Rig::duo_e2();
     five_evidence_days(&mut r);
     r.goto(dec(6), 9, 0);
     let mut o = r.outcome(CheckPurpose::Before, CheckVerdict::Like, None);
@@ -1496,7 +1570,8 @@ fn two_reference_checks_in_the_known_clean_window() {
 
 #[test]
 fn not_dust_adopts_for_the_key_of_the_case() {
-    let mut r = Rig::duo();
+    // E2 on: `five_evidence_days` warns by route (b).
+    let mut r = Rig::duo_e2();
     five_evidence_days(&mut r);
     r.goto(dec(6), 9, 0);
     assert_eq!(r.status(), Status::Warning);
@@ -1545,7 +1620,8 @@ fn not_dust_holds_across_a_restart_the_same_day() {
 fn a_restart_restores_the_day_and_the_history() {
     // The same days twice: straight through, and with the service restarted twice.
     let run = |restarts: bool| -> Rig {
-        let mut r = Rig::duo();
+        // E2 on: the light-load day is what the restart must restore.
+        let mut r = Rig::duo_e2();
         r.learned_light();
         r.goto(dec(1), 10, 0);
         r.hot_build();
@@ -1596,8 +1672,9 @@ fn a_restart_restores_the_day_and_the_history() {
 #[test]
 fn records_near_midnight_count_for_their_own_day() {
     // Summer time (UTC+1), ticking straight through two midnights.
-    let mut r = Rig::at(
-        Chassis::Duo,
+    // E2 on: the 23:59 window must make 2/12 an E2 day.
+    let mut r = Rig::on(
+        machine_e2(Chassis::Duo),
         her_config(),
         Timeline::starting(dec(1), 8, 0, 0, 3600),
     );
@@ -1628,6 +1705,7 @@ fn records_near_midnight_count_for_their_own_day() {
         &records,
         &daily,
         None,
+        r.watch.engine.machine.light_load_evidence,
     );
     assert!(text.ends_with("no verdict would change\n"), "{text}");
 }
@@ -1734,7 +1812,8 @@ fn fan_fixed_relearns_r_fan_from_the_next_check() {
 #[test]
 fn references_relearned_after_a_clean_wait_for_its_verdict() {
     for clean in [true, false] {
-        let mut r = Rig::duo();
+        // E2 on: `cleaned_after_warning` warns by route (c).
+        let mut r = Rig::duo_e2();
         cleaned_after_warning(&mut r);
         // Eight builds on three days after the clean: R_passive learns from them.
         for (d, h) in [(4, 10), (4, 12), (4, 14), (5, 10), (5, 12), (5, 14), (6, 10), (6, 12)] {
@@ -1777,7 +1856,8 @@ fn references_relearned_after_a_clean_wait_for_its_verdict() {
 
 #[test]
 fn an_uncapped_relearn_clears_the_light_cap_notice() {
-    let mut r = Rig::duo();
+    // E2 on: the light reference is learned only then.
+    let mut r = Rig::duo_e2();
     {
         let e = r.engine();
         e.refs.keys.entry(SEED_KEY.into()).or_default().light = Some(LightRef {
@@ -2099,4 +2179,465 @@ fn no_light_window_can_qualify_during_a_build() {
     assert!(!may(&r), "within 90 s of it");
     r.idle(40);
     assert!(may(&r));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Light-load evidence (E2) off, her decision of 21/11/2026: on her clean machine bch-reconcile
+// alone throttled 42-48 % of light-load time at ≥ 86 °C. These run with the default machine;
+// where a test also runs with E2 on, that run shows what the switch prevents.
+
+#[test]
+fn light_load_evidence_is_off_and_the_classes_say_so() {
+    // Her decision of 21/11/2026. Turning it back on means revisiting the tests in this section.
+    const { assert!(!LIGHT_LOAD_EVIDENCE) };
+    assert!(!Machine::default().light_load_evidence);
+    let now = Timeline::starting(dec(1), 9, 0, 0, 0).now();
+    let e = Engine::new(machine(Chassis::Duo), None, References::default(), &now);
+    assert_eq!(e.state.classes, vec!["E1", "check"]);
+    assert_eq!(e.machine.classes, vec!["E1", "check"]);
+    // The counter is still there: plateau duty, the check and replay use it.
+    assert_eq!(e.state.throttle_counter, Some(true));
+    assert!(e.machine.has_throttle && e.state.has_throttle_counter());
+    let e = Engine::new(machine_e2(Chassis::Duo), None, References::default(), &now);
+    assert_eq!(e.state.classes, vec!["E1", "E2", "check"]);
+}
+
+/// The dust of 17/11/2026 at light load on days 1-3 (13 hot minutes each), and 31 cool minutes
+/// on day 4: E2 days, a warning by route (c) and a day qualifying by light load alone, with E2 on.
+fn dusty_light_days(r: &mut Rig) {
+    r.learned_light();
+    for d in [1, 2, 3] {
+        r.goto(dec(d), 14, 0);
+        r.hot_light();
+    }
+    r.goto(dec(4), 14, 0);
+    r.light(31, 70.0, 0.0);
+    r.goto(dec(5), 9, 0);
+}
+
+#[test]
+fn light_load_is_never_dust_evidence() {
+    let mut on = Rig::duo_e2();
+    dusty_light_days(&mut on);
+    assert_eq!(on.status(), Status::Warning, "E2 on: route (c)");
+    assert!(on.daily(dec(4)).unwrap().qualifying, "E2 on: 31 voting windows");
+
+    let mut r = Rig::duo();
+    dusty_light_days(&mut r);
+    assert_eq!(r.status(), Status::Clean);
+    assert!(r.state().case.is_none());
+    for kind in [EventKind::FirstEvidence, EventKind::Suspicion, EventKind::Warning] {
+        assert!(r.events(kind).is_empty(), "{kind:?}");
+    }
+    assert!(!r.state().pill.show && !r.state().mon.show);
+    for d in 1..=4 {
+        let day = r.daily(dec(d)).unwrap();
+        assert_eq!(
+            (day.light_q, day.light_hot, day.e2, day.qualifying),
+            (0, 0, false, false),
+            "day {d}"
+        );
+    }
+    assert_eq!(r.daily(dec(1)).unwrap().light_keys[SEED_KEY], 13, "the windows were seen");
+    assert_eq!(r.daily(dec(4)).unwrap().light_keys[SEED_KEY], 31);
+    let s = r.state();
+    assert_eq!((s.counts.qualifying_days, s.counts.evidence_days, s.counts.hot_windows), (0, 0, 0));
+    // Recorded as judged, all the same.
+    let hot = r.light_records().iter().filter(|l| l.verdict == LightVerdict::Hot).count();
+    assert_eq!(hot, 39);
+}
+
+#[test]
+fn bch_reconcile_alone_is_never_dust_evidence() {
+    let run = |e2: bool| -> Rig {
+        let mut r = if e2 { Rig::duo_e2() } else { Rig::duo() };
+        // The light reference one window short of learned, from windows like these.
+        r.engine().refs.keys.entry(SEED_KEY.into()).or_default().light = Some(LightRef {
+            n: 299,
+            values: vec![0.45; 299],
+            ..LightRef::default()
+        });
+        r.goto(dec(1), 14, 0);
+        r.reconcile_light(13);
+        r.goto(dec(2), 9, 0);
+        r
+    };
+    // E2 on: this clean machine opens a case, and the learn ends capped with "check the vents".
+    let on = run(true);
+    let first = on.state().case.as_ref().expect("E2 on: a case").first_evidence.clone().unwrap();
+    assert_eq!(first.class, "E2");
+    assert!(first.summary.ends_with("mostly bch-reconcile"), "{}", first.summary);
+    assert!(on.notice_ids().contains(&"light_cap".to_owned()), "{:?}", on.notice_ids());
+
+    let r = run(false);
+    assert_eq!(r.status(), Status::Clean);
+    assert!(r.state().case.is_none());
+    assert!(r.events(EventKind::FirstEvidence).is_empty());
+    let day = r.daily(dec(1)).unwrap();
+    assert_eq!((day.light_q, day.light_hot, day.e2, day.qualifying), (0, 0, false, false));
+    // Nothing is learned, so there is no capped reference and no notice about the vents.
+    assert!(r.notice_ids().is_empty(), "{:?}", r.notice_ids());
+    assert!(r.events(EventKind::Reference).is_empty());
+    let light = r.watch.engine.refs.keys[SEED_KEY].light.clone().unwrap();
+    assert_eq!((light.n, light.p90), (299, None));
+    // Recorded as judged: hot by saturation (45 % with the fan at 6100), mostly bch-reconcile.
+    let windows = r.light_records();
+    assert_eq!(windows.len(), 13);
+    assert!(windows.iter().all(|l| l.verdict == LightVerdict::Hot && l.top[0].0 == "bch-reconcile"));
+}
+
+#[test]
+fn builds_alone_warn_by_route_d_and_light_days_do_not_dilute_them() {
+    // `warning_route_d_plateaus_only`, with a day of cool light load after every build day.
+    let run = |e2: bool| -> Rig {
+        let mut r = if e2 { Rig::duo_e2() } else { Rig::duo() };
+        r.learned_light();
+        for d in [1, 2] {
+            r.goto(dec(d), 10, 0);
+            r.hot_build();
+        }
+        r.goto(dec(3), 9, 0);
+        assert_eq!(r.status(), Status::Suspicion);
+        for d in (4..=22).step_by(3) {
+            r.goto(dec(d), 10, 0);
+            r.hot_build();
+            r.goto(dec(d + 1), 14, 0);
+            r.light(31, 70.0, 0.0);
+        }
+        r.goto(dec(24), 9, 0);
+        r
+    };
+    let r = run(false);
+    assert_eq!(r.status(), Status::Warning);
+    assert_eq!(r.state().case.as_ref().unwrap().route.as_deref(), Some("d"));
+    assert_eq!(
+        r.events(EventKind::Warning),
+        vec!["Needs a clean: signs on 7 of 7 days in 21, after three weeks of suspicion"]
+    );
+    // E2 on: the seven light days qualify too, and 7 of 14 is under 2/3.
+    assert_eq!(run(true).status(), Status::Suspicion);
+}
+
+#[test]
+fn throttling_while_cool_is_still_noticed() {
+    let mut r = Rig::duo();
+    r.goto(dec(1), 14, 0);
+    // Throttled at 70 °C for over 10 minutes: a charger or EC limit.
+    r.light(12, 70.0, 0.95);
+    assert_eq!(r.notice_ids(), vec!["cold_throttle"]);
+    assert_eq!(
+        r.events(EventKind::Notice),
+        vec!["throttling while cool: charger or EC limit"]
+    );
+    assert!(r.light_records().iter().all(|l| l.verdict == LightVerdict::Cold));
+    r.goto(dec(2), 9, 0);
+    assert!(r.state().case.is_none(), "never dust");
+}
+
+#[test]
+fn e2_days_from_a_restored_store_cannot_warn() {
+    let run = |e2_after: bool| -> Rig {
+        // Written with E2 on: two E2 days, SUSPICION since day 2, and day 1 settled with its
+        // daily line.
+        let mut r = Rig::duo_e2();
+        r.learned_light();
+        for d in [1, 2] {
+            r.goto(dec(d), 14, 0);
+            r.hot_light();
+        }
+        assert_eq!(r.status(), Status::Suspicion);
+        assert_eq!(
+            r.state().case.as_ref().unwrap().e2_days,
+            vec![dec(1).key(), dec(2).key()]
+        );
+        // Started again that evening, day 2 still open: it is rebuilt from its records.
+        let mut r = r.restart_as(dec(2), 18, e2_after);
+        r.idle(5);
+        // Seven days of hot builds. With the two E2 days, three of them are route (b). Kept as
+        // SUSPICION since day 2, they would be route (d) once day 22 settles.
+        for d in 3..=9 {
+            r.goto(dec(d), 10, 0);
+            r.hot_build();
+        }
+        r.goto(dec(26), 9, 0);
+        r
+    };
+    let on = run(true);
+    assert_eq!(on.state().case.as_ref().unwrap().route.as_deref(), Some("b"));
+
+    let r = run(false);
+    // The case on light load alone closed at the restart, and the builds opened their own on
+    // day 3: SUSPICION since day 4 settled, too late for route (d) to find 7 of them in 21 days.
+    assert_eq!(r.status(), Status::Suspicion);
+    assert!(r.events(EventKind::Warning).is_empty(), "{:?}", r.events(EventKind::Warning));
+    let closed = r.cases();
+    assert_eq!(closed.len(), 1);
+    assert_eq!(closed[0].outcome, CaseOutcome::Withdrawn);
+    assert_eq!(closed[0].first_evidence.as_ref().unwrap().class, "E2");
+    let case = r.state().case.clone().unwrap();
+    assert_ne!(case.id, closed[0].id);
+    assert_eq!(case.first_evidence.as_ref().unwrap().label, "3/12/2026 10:00");
+    assert_eq!(case.suspected_at.as_ref().unwrap().date_label(), "5/12/2026");
+    assert_eq!((case.route, case.e2_days.len()), (None, 0));
+    assert!(case.earlier_sighting.is_none(), "a withdrawn case is no sighting");
+    assert_eq!(r.state().classes, vec!["E1", "check"]);
+    let d2 = r.daily(dec(2)).unwrap();
+    assert_eq!((d2.light_hot, d2.e2), (0, false), "rebuilt under the rules in force");
+}
+
+/// WARNING by route (c) on day 3 with light-load evidence on (`Rig::duo_e2`), then the service
+/// restarts that evening with it `on` or off.
+fn light_warning_restarted(on: bool) -> Rig {
+    let mut r = Rig::duo_e2();
+    r.learned_light();
+    for d in [1, 2, 3] {
+        r.goto(dec(d), 14, 0);
+        r.hot_light();
+    }
+    assert_eq!(r.state().case.as_ref().unwrap().route.as_deref(), Some("c"));
+    let mut r = r.restart_as(dec(3), 18, on);
+    r.idle(5);
+    r
+}
+
+#[test]
+fn a_warning_on_light_load_alone_closes_at_a_restart_with_it_off() {
+    let on = light_warning_restarted(true);
+    assert_eq!(on.status(), Status::Warning);
+    assert!(on.events(EventKind::Withdrawn).is_empty());
+
+    let mut r = light_warning_restarted(false);
+    assert_eq!(r.status(), Status::Clean);
+    assert!(r.state().case.is_none());
+    assert!(!r.state().pill.show && !r.state().mon.show, "the pill goes");
+    assert_eq!(
+        r.events(EventKind::Withdrawn),
+        vec!["Light-load evidence is off: the case of 1/12/2026 14:00 rested on light load alone and is closed"]
+    );
+    let closed = r.cases();
+    assert_eq!(closed.len(), 1);
+    assert_eq!(closed[0].outcome, CaseOutcome::Withdrawn);
+    // No case is open, so her builds teach R_passive again.
+    r.goto(dec(4), 10, 0);
+    r.clean_build();
+    let passive = r.watch.engine.refs.keys[SEED_KEY].passive.clone().unwrap();
+    assert_eq!(passive.n, 1);
+    // Build evidence opens a case of its own, first evidence a build, no earlier sighting.
+    r.goto(dec(5), 10, 0);
+    r.hot_build();
+    r.goto(dec(6), 9, 0);
+    assert_eq!(r.status(), Status::Watch);
+    let case = r.state().case.clone().unwrap();
+    assert_eq!(case.first_evidence.unwrap().class, "E1");
+    assert!(case.earlier_sighting.is_none());
+}
+
+#[test]
+fn a_case_with_builds_keeps_them_and_loses_its_light_days() {
+    // Written with E2 on: an E2 day opens the case on day 1, hot builds follow on days 2-5, and
+    // route (b) warns as day 5 settles. SUSPICION came as day 2 settled, the E2 day counting.
+    let run = |on: bool| -> Rig {
+        let mut r = Rig::duo_e2();
+        r.learned_light();
+        r.goto(dec(1), 14, 0);
+        r.hot_light();
+        for d in 2..=5 {
+            r.goto(dec(d), 10, 0);
+            r.hot_build();
+        }
+        r.goto(dec(6), 9, 0);
+        let case = r.state().case.clone().unwrap();
+        assert_eq!(case.route.as_deref(), Some("b"));
+        assert_eq!(case.first_evidence.unwrap().class, "E2");
+        assert_eq!(case.suspected_at.unwrap().date_label(), "3/12/2026");
+        let mut r = r.restart_as(dec(6), 10, on);
+        r.idle(5);
+        r
+    };
+    assert_eq!(run(true).status(), Status::Warning);
+
+    let r = run(false);
+    // Without day 1, builds alone made it a SUSPICION as day 3 settled.
+    assert_eq!(r.status(), Status::Suspicion);
+    let s = r.state();
+    assert!(!s.pill.show);
+    assert_eq!(s.mon.kind, "suspicion");
+    let case = s.case.clone().unwrap();
+    assert_eq!(case.id, "c-20261201-1400", "the same case");
+    assert_eq!((case.route, case.warning_since), (None, None));
+    assert_eq!(case.suspected_at.unwrap().date_label(), "4/12/2026");
+    let days: Vec<String> = (2..=5).map(|d| dec(d).key()).collect();
+    assert_eq!(case.evidence_days, days);
+    assert_eq!(case.qualifying_days, days);
+    assert!(case.e2_days.is_empty());
+    let first = case.first_evidence.unwrap();
+    assert_eq!((first.class.as_str(), first.label.as_str()), ("E1", "2/12/2026 10:00"));
+    assert!(first.summary.starts_with("build 90.5 °C"), "{}", first.summary);
+    assert_eq!(
+        r.events(EventKind::Withdrawn),
+        vec!["Light-load evidence is off: the case of 1/12/2026 14:00 keeps only its builds (signs on 4 days); back to suspicion"]
+    );
+    // Restarted again, nothing more changes.
+    let r = r.restart_as(dec(6), 11, false);
+    assert_eq!(r.events(EventKind::Withdrawn).len(), 1);
+    assert_eq!(r.status(), Status::Suspicion);
+}
+
+#[test]
+fn a_suspicion_decided_again_is_never_suspected_earlier() {
+    // Written with E2 on: an E2 day opens the case, four days qualify by light load alone and
+    // dilute the ratio, and hot builds on days 6-8 make it SUSPICION only as day 8 settles.
+    let mut r = Rig::duo_e2();
+    r.learned_light();
+    r.goto(dec(1), 14, 0);
+    r.hot_light();
+    for d in 2..=5 {
+        r.goto(dec(d), 14, 0);
+        r.light(31, 70.0, 0.0);
+    }
+    for d in 6..=8 {
+        r.goto(dec(d), 10, 0);
+        r.hot_build();
+    }
+    r.goto(dec(9), 9, 0);
+    assert_eq!(r.status(), Status::Suspicion);
+    let suspected = r.state().case.as_ref().unwrap().suspected_at.clone().unwrap();
+    assert_eq!(suspected.date_label(), "9/12/2026");
+    // Without light load, days 6 and 7 would have done it a day earlier. The clock of route (d)
+    // does not move back.
+    let mut r = r.restart_as(dec(9), 10, false);
+    r.idle(5);
+    assert_eq!(r.status(), Status::Suspicion);
+    let case = r.state().case.clone().unwrap();
+    assert_eq!(case.suspected_at.unwrap().date_label(), "9/12/2026");
+    assert_eq!(case.evidence_days, vec![dec(6).key(), dec(7).key(), dec(8).key()]);
+    assert_eq!(case.qualifying_days, case.evidence_days, "light-only qualifying days go too");
+    assert_eq!(
+        r.events(EventKind::Withdrawn),
+        vec!["Light-load evidence is off: the case of 1/12/2026 14:00 keeps only its builds (signs on 3 days)"]
+    );
+}
+
+#[test]
+fn a_warning_by_a_worse_check_stands_without_its_light_days() {
+    // Written with E2 on: an E2 day opens the case, and a check the next day comes out Worse.
+    let mut r = Rig::duo_e2();
+    r.learned_light();
+    r.goto(dec(1), 14, 0);
+    r.hot_light();
+    r.goto(dec(2), 10, 0);
+    r.check(CheckPurpose::Confirm, CheckVerdict::Worse, None);
+    assert_eq!(r.state().case.as_ref().unwrap().route.as_deref(), Some("a"));
+    let mut r = r.restart_as(dec(2), 18, false);
+    r.idle(5);
+    assert_eq!(r.status(), Status::Warning);
+    let case = r.state().case.clone().unwrap();
+    assert_eq!(case.route.as_deref(), Some("a"));
+    assert!(case.e2_days.is_empty() && case.evidence_days.is_empty());
+    let first = case.first_evidence.unwrap();
+    assert_eq!((first.class.as_str(), first.label.as_str()), ("check", "2/12/2026 09:55"));
+    assert_eq!(r.state().pill.label, "Needs a clean since 2/12/2026");
+    assert_eq!(
+        r.events(EventKind::Withdrawn),
+        vec!["Light-load evidence is off: the case of 1/12/2026 14:00 keeps only its cooling check"]
+    );
+}
+
+#[test]
+fn a_not_improved_from_light_load_alone_is_verified_again() {
+    // Written with E2 on: two E2 days after the clean of day 3, then five clean builds. Day 10
+    // settling gives the passive verdict, Not improved by the E2 days.
+    let mut r = Rig::duo_e2();
+    cleaned_after_warning(&mut r);
+    for d in [4, 5] {
+        r.goto(dec(d), 14, 0);
+        r.hot_light();
+    }
+    for d in 6..=10 {
+        r.goto(dec(d), 10, 0);
+        r.clean_build();
+    }
+    r.goto(dec(11), 9, 0);
+    assert_eq!(r.status(), Status::Warning);
+    assert_eq!(r.state().known_clean_until, None);
+    let mut r = r.restart_as(dec(11), 10, false);
+    r.idle(5);
+    let s = r.state();
+    assert_eq!(s.status, Status::Verifying);
+    assert_eq!(s.verification.as_ref().unwrap().verdict, None);
+    assert_eq!(s.known_clean_until.as_deref(), Some("2027-01-02"));
+    assert!(!s.pill.show);
+    assert_eq!(
+        r.events(EventKind::Withdrawn),
+        vec!["Light-load evidence is off: \"Still hot after cleaning 3/12/2026\" rested on light-load days alone, so the clean is being verified again"]
+    );
+    // The builds decide as day 11 settles.
+    r.goto(dec(12), 9, 0);
+    assert_eq!(r.status(), Status::Clean);
+    assert_eq!(r.cases()[0].outcome, CaseOutcome::VerifiedByBuilds);
+
+    // A Not improved that the hot builds would have given anyway stands, E2 days or not.
+    let mut r = Rig::duo_e2();
+    cleaned_after_warning(&mut r);
+    for d in 4..=8 {
+        r.goto(dec(d), 10, 0);
+        r.hot_build();
+        if d <= 5 {
+            r.goto(dec(d), 14, 0);
+            r.hot_light();
+        }
+    }
+    r.goto(dec(11), 9, 0);
+    assert_eq!(r.status(), Status::Warning);
+    let pv = r.state().verification.clone().unwrap().passive.unwrap();
+    assert_eq!((pv.hot, pv.e2_days), (5, 2));
+    let mut r = r.restart_as(dec(11), 10, false);
+    r.idle(5);
+    assert_eq!(r.status(), Status::Warning);
+    assert_eq!(r.state().pill.kind, "dust_not_improved");
+    assert!(r.events(EventKind::Withdrawn).is_empty());
+}
+
+#[test]
+fn e2_days_restored_into_a_verification_do_not_fail_the_clean() {
+    let run = |e2_after: bool| -> Rig {
+        // Written with E2 on: `cleaned_after_warning` warns by route (c), and two E2 days follow
+        // the clean.
+        let mut r = Rig::duo_e2();
+        cleaned_after_warning(&mut r);
+        for d in [4, 5] {
+            r.goto(dec(d), 14, 0);
+            r.hot_light();
+        }
+        let pv = r.state().verification.clone().unwrap().passive.unwrap();
+        assert_eq!(pv.e2_days, 2);
+        let mut r = r.restart_as(dec(5), 18, e2_after);
+        r.idle(5);
+        for d in 6..=10 {
+            r.goto(dec(d), 10, 0);
+            r.clean_build();
+        }
+        r.goto(dec(11), 9, 0);
+        r
+    };
+    assert_eq!(run(true).status(), Status::Warning, "E2 on: not improved");
+
+    let r = run(false);
+    assert_eq!(r.cases()[0].outcome, CaseOutcome::VerifiedByBuilds);
+    assert!(r.events(EventKind::NotImproved).is_empty());
+}
+
+#[test]
+fn not_dust_leaves_the_light_reference_alone() {
+    let mut r = Rig::duo();
+    r.goto(dec(1), 10, 0);
+    r.hot_build();
+    r.goto(dec(1), 14, 0);
+    r.light(31, 70.0, 0.0);
+    r.goto(dec(2), 9, 0);
+    assert_eq!(r.status(), Status::Watch);
+    r.act(|e, now| e.not_dust(now));
+    assert!(r.watch.engine.refs.keys[SEED_KEY].light.is_none());
+    let text = &r.events(EventKind::NotDust)[0];
+    assert!(!text.contains("light load"), "{text}");
 }

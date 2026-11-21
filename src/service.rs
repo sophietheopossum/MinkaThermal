@@ -19,7 +19,7 @@ use crate::model::{
 };
 use crate::paths::Paths;
 use crate::profile::{self, ConfigKey};
-use crate::rules::{CheckOutcome, Effect, Engine, KeyCtx, Machine, Watch};
+use crate::rules::{CheckOutcome, Effect, Engine, KeyCtx, LIGHT_LOAD_EVIDENCE, Machine, Watch};
 use crate::sampler::{self, ProcSnapshot, Row, Sampler, top_consumers};
 use crate::sensors::{ConfigRead, StaticInfo};
 use crate::store::{self, Store, StoreError, StoreLock};
@@ -379,7 +379,12 @@ impl Service {
             tjmax_c: sensors.temp_crit_c,
             has_fan: sensors.has_fan(),
             has_throttle: sensors.pkg_thr_ms.is_some(),
-            classes: sensors.classes().iter().map(|c| (*c).to_owned()).collect(),
+            light_load_evidence: LIGHT_LOAD_EVIDENCE,
+            classes: sensors
+                .classes(LIGHT_LOAD_EVIDENCE)
+                .iter()
+                .map(|c| (*c).to_owned())
+                .collect(),
         };
         let mut engine = Engine::new(machine, state, refs, &now);
         engine.restore(&daily, &records, &cases, &events, &now);

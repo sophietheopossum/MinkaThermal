@@ -172,6 +172,46 @@ pub fn not_improved_check_event(date: &str, check: &str) -> String {
     format!("Still hot after cleaning {date}: cooling {check}")
 }
 
+/// A case that a build with light-load evidence on left open, decided again at start with it
+/// off: it rested on light load alone and closes.
+pub fn withdrawn_event(first: &str) -> String {
+    format!(
+        "Light-load evidence is off: the case of {first} rested on light load alone and is closed"
+    )
+}
+
+/// Such a case with builds or a cooling check as well: it keeps those. `now` is its status when
+/// that changed.
+pub fn light_days_dropped_event(
+    first: &str,
+    build_days: usize,
+    checked: bool,
+    now: Option<Status>,
+) -> String {
+    let builds = format!(
+        "its builds (signs on {build_days} {})",
+        if build_days == 1 { "day" } else { "days" }
+    );
+    let kept = match (build_days, checked) {
+        (0, _) => "its cooling check".to_owned(),
+        (_, false) => builds,
+        (_, true) => format!("{builds} and its cooling check"),
+    };
+    let mut s = format!("Light-load evidence is off: the case of {first} keeps only {kept}");
+    if let Some(st) = now {
+        s += &format!("; back to {}", st.as_str());
+    }
+    s
+}
+
+/// A passive Not improved that light-load days alone decided, with light-load evidence off: the
+/// clean is verified again.
+pub fn not_improved_withdrawn_event(date: &str) -> String {
+    format!(
+        "Light-load evidence is off: \"Still hot after cleaning {date}\" rested on light-load days alone, so the clean is being verified again"
+    )
+}
+
 pub fn lapse_event(qualifying: u32, first: &str) -> String {
     format!("No signs for 14 days ({qualifying} with comparable load): the case of {first} closed")
 }

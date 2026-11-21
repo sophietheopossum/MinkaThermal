@@ -104,7 +104,12 @@ pub struct State {
     pub boot_id: String,
     pub chassis: ChassisInfo,
     pub key: KeyInfo,
+    /// The active evidence classes. "E2" only while light-load evidence is on (off since
+    /// 21/11/2026), so it no longer says whether the throttle counter exists.
     pub classes: Vec<String>,
+    /// Whether the package throttle counter exists; `replay` judges plateaus by it. Read it with
+    /// `has_throttle_counter`.
+    pub throttle_counter: Option<bool>,
     pub status: Status,
     pub setup_needed: bool,
     /// Day key (`yyyy-mm-dd`) on which the known-clean window ends.
@@ -141,6 +146,14 @@ impl State {
             version: crate::VERSION.to_owned(),
             ..State::default()
         }
+    }
+
+    /// Whether the machine has the package throttle counter. A state from before
+    /// `throttle_counter` said so through "E2" in `classes`, and one with no classes at all is
+    /// taken to have it, as the Duo does.
+    pub fn has_throttle_counter(&self) -> bool {
+        self.throttle_counter
+            .unwrap_or_else(|| self.classes.is_empty() || self.classes.iter().any(|c| c == "E2"))
     }
 }
 
@@ -732,6 +745,9 @@ pub enum CaseOutcome {
     Lapsed,
     ClearedByCheck,
     Dismissed,
+    /// Closed at start: it rested on light-load evidence (E2) alone, which a build with it off
+    /// (since 21/11/2026) does not count. Not an earlier sighting.
+    Withdrawn,
     #[default]
     #[serde(other)]
     Unverified,
@@ -898,6 +914,9 @@ pub enum EventKind {
     Reference,
     ConfigChange,
     BiosChange,
+    /// Light-load evidence is off, and a case (or a Not improved) that a build with it on left
+    /// behind was decided again at start.
+    Withdrawn,
     #[default]
     #[serde(other)]
     Notice,
@@ -992,6 +1011,22 @@ pub(crate) mod tests {
         assert_eq!(s.schema, 0, "a missing schema reads as 0, so it migrates");
         let s: State = serde_json::from_str("{}").unwrap();
         assert_eq!(s, State::default());
+    }
+
+    #[test]
+    fn the_throttle_counter_outlives_e2_in_the_classes() {
+        let with = |classes: &[&str], counter: Option<bool>| State {
+            classes: classes.iter().map(|c| (*c).to_owned()).collect(),
+            throttle_counter: counter,
+            ..State::default()
+        };
+        // Light-load evidence off (21/11/2026): no E2 in the classes, the counter still there.
+        assert!(with(&["E1", "check"], Some(true)).has_throttle_counter());
+        assert!(!with(&["E1", "check"], Some(false)).has_throttle_counter());
+        // A state from before the field: E2 said it, and no classes at all is the Duo.
+        assert!(with(&["E1", "E2", "check"], None).has_throttle_counter());
+        assert!(!with(&["E1", "check"], None).has_throttle_counter());
+        assert!(with(&[], None).has_throttle_counter());
     }
 
     #[test]

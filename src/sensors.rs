@@ -807,14 +807,16 @@ impl Sensors {
 
     /// Evidence classes the discovered signals support (§6.3: missing signals drop their classes).
     /// E1 needs the package temperature and busy time, E2 the package throttle counter as well,
-    /// and the check the temperature. The fan rules are separate: see `has_fan`.
-    pub fn classes(&self) -> Vec<&'static str> {
+    /// and the check the temperature. E2 is listed only with `light_load_evidence`
+    /// (`rules::LIGHT_LOAD_EVIDENCE`, off since 21/11/2026). The fan rules are separate: see
+    /// `has_fan`.
+    pub fn classes(&self, light_load_evidence: bool) -> Vec<&'static str> {
         let base = self.temp.is_some() && self.proc_stat.is_some();
         let mut out = Vec::new();
         if base {
             out.push("E1");
         }
-        if base && self.pkg_thr_ms.is_some() {
+        if base && self.pkg_thr_ms.is_some() && light_load_evidence {
             out.push("E2");
         }
         if self.temp.is_some() {
@@ -1402,7 +1404,10 @@ mod tests {
             (ctx.sen2, ctx.sen4, ctx.acpitz),
             (Some(41.0), Some(39.0), Some(27.8))
         );
-        assert_eq!(s.classes(), vec!["E1", "E2", "check"]);
+        assert_eq!(s.classes(true), vec!["E1", "E2", "check"]);
+        // Light-load evidence off (21/11/2026): the counter is there, E2 is not listed.
+        assert_eq!(s.classes(false), vec!["E1", "check"]);
+        assert!(s.pkg_thr_ms.is_some());
         assert!(!s.failed());
 
         let info = StaticInfo::read(&root);
@@ -1478,7 +1483,7 @@ mod tests {
         assert_eq!(s.temp_c(), Some(61.5));
         assert!(s.core_temps.is_empty());
         // No throttle counters: E2 drops.
-        assert_eq!(s.classes(), vec!["E1", "check"]);
+        assert_eq!(s.classes(true), vec!["E1", "check"]);
         // No crit, no max: 95 °C.
         assert_eq!(s.tcc_c(None), 95.0);
         assert_eq!(s.fan_rpm(), Some(2000));

@@ -4,7 +4,7 @@ This spec merges three inputs: the detection spec (the judges' Design 3 plus the
 
 ## What Sophie will see
 
-1. While cooling is normal, nothing appears. A small user service compares her sustained builds and light-load throttling with the clean reference from 20/11/2026.
+1. While cooling is normal, nothing appears. A small user service compares her sustained builds with the clean reference from 20/11/2026. It records light-load throttling too, but since 21/11/2026 that counts for nothing (§0).
 2. A first sign of dust is only logged. It opens a case and stamps the date and time of the first evidence, which the MinkaThermal window shows.
 3. When signs repeat over several days, MinkaMon shows a quiet note: `DUST? SINCE 3/12/2026 ▸ CHECK ▸ LATER`.
 4. When the pattern persists, or a cooling check confirms it, the warning latches. An amber warning triangle with "!" flashes up on MinkaMon's schematic, the panel header reads `NEEDS A CLEAN · FIRST 3/12/2026 14:05`, and an amber "Needs a clean since 3/12/2026" pill appears in the bar.
@@ -28,12 +28,14 @@ This spec merges three inputs: the detection spec (the judges' Design 3 plus the
 - **Room:** room conditions are not modelled ("we can deal with that as and when relevant").
 - **No tray icon:** AntiWebUI can host other apps' tray items but cannot publish one.
 - **AGENTS.md applies:** md3e in Compact density, Proustite tokens only, Roboto Flex, no new QML, dense layouts, dates in d/M/yyyy.
+- **Light-load evidence (E2) off (21/11/2026):** "just turn the light load check off". On her clean machine (cleaned 20/11/2026), bch-reconcile alone, about one core at nice 19, throttled 42-48 % of light-load time at ≥ 86 °C, so E2 would warn on a clean laptop. She chose this over excluding reconcile windows or requiring a second hot thread. It is one switch, `rules::LIGHT_LOAD_EVIDENCE`, off on every chassis. The E2 text below is kept for the day it comes back; the notes dated 21/11/2026 say what applies meanwhile.
 
 ## 1. How it decides
 
 1. **It compares only where the power is known.**
    - **E1, plateau:** sustained all-core load past the PL1 window. The package is held at PL1 = 28 W, so the steady temperature and the thermal-throttle duty measure the cooling path.
    - **E2, light load:** 5-30 % busy, about 0.4-2.4 threads. A clean machine rarely reaches TCC here; the dusty laptop on 17/11/2026 throttled about 40 % of the time.
+     - *21/11/2026: off, her decision (§0).* Her clean machine throttled 42-48 % here under bch-reconcile alone. E1 and the check decide on their own.
    - **Display only:** idle temperature, since-boot counters and mixed load. The just-cleaned machine shows 5.3 % of its uptime throttled since boot, so those counters cannot be evidence.
 2. **Tiers.**
    - An evidence day opens WATCH, which is logged only.
@@ -204,6 +206,7 @@ MinkaThermal/
 - **Recorded per hot window:** `threads` = mean b × nproc, and the top consumers.
 - **Cold throttle** is never dust. Over 10 min of it in a day gives the notice "throttling while cool: charger or EC limit".
 - **E2 votes only once the light reference is learned** (§6.2). Until then the window shows "light load: learning n/300".
+- *21/11/2026, E2 off (§0):* windows still qualify, are judged and recorded, and their cold throttle still counts. None votes. The light reference is not learned (§6.2), so there is no "learning n/300": it would stay at 0/300. The window shows "light load: off" instead, as `status` does (§12.2, §13).
 
 ### 5.3 Daily roll-up (display)
 - For each local day and busy bin (<5, 5-30, 30-60, 60-85, ≥85 %): minutes, throttle ms, hot ms, median T and median fan.
@@ -244,6 +247,7 @@ MinkaThermal/
   - **After a clean**, re-learning is capped at the previous verified R_passive + 1.5 °C and + 1 pp of duty.
   - **Until learned**, plateaus use the seed-phase rules against R_active (§7.2).
 - **Light reference** `light_p90`: the p90 of `duty_hot` over ≥ 300 qualifying windows inside a known-clean window (on Duo too), with a floor of 0.2 % and a cap of 2 % (a cap hit raises a notice). Re-learned after each clean.
+  - *21/11/2026, E2 off (§0):* not learned, and Not dust does not re-learn it. Learned now, it would include the reconcile windows, and a capped learn would tell her to check the vents. Turning E2 back on starts a fresh learn of 300 windows.
 - **Known-clean window:** 30 days after a Cleaned. Outside one (first run "Not sure"), references are learned but marked **unverified**.
 
 ### 6.3 Generic mode
@@ -263,6 +267,7 @@ MinkaThermal/
   - with no throttle counters, duty = the fraction of seconds at ≥ TCC − 2; a plateau is hot when ΔT ≥ 4 and f ≤ 0.95·R_f; E2 is unavailable;
   - with no fan sensor, the fan rules drop.
   - The window lists the active classes.
+- *21/11/2026, E2 off (§0):* every machine, the Duo included, now runs as one without the counter does for E2. No light window votes, so light load makes no qualifying day: a light-only day could never be an evidence day, and counting it would dilute the ratios that SUSPICION, route (d) and the lapse use. The counter still feeds plateau duty, the check and FAN/FAULT. `classes` omits E2, and state.json's `throttle_counter` says whether the counter exists (`replay` judges plateaus by it).
 
 ---
 
@@ -295,6 +300,7 @@ For the Duo seed (R_duty 0.93 %) these are 3 / 8 / 2 / 2.5 %.
 ### 7.3 Light-window verdict
 - **Hot** when `duty_hot` ≥ **L = max(5 %, 10 × light_p90)**.
 - For scale: the 17/11/2026 dust was about 40 %.
+- *21/11/2026, E2 off (§0):* the verdict is still stored on the record. It counts for nothing. Her clean machine reached 42-48 % under bch-reconcile alone.
 
 ### 7.4 Days
 - **Days and settling:** a day is a local calendar day. It is settled at the first tick after the local date changes. Days the service missed are settled at start, from records.
@@ -302,6 +308,7 @@ For the Duo seed (R_duty 0.93 %) these are 3 / 8 / 2 / 2.5 %.
 - **E1 evidence day:** ≥ 1 hot plateau, **and** hot ≥ clean plateaus that day. Decided when the day settles.
 - **E2 evidence day:** ≥ 10 hot light windows, which is at least 30 s of TCC throttling spread over ≥ 10 minutes of 1-2-thread work. Decided the moment the 10th window lands, since the count only grows.
 - **Evidence day:** an E1 or an E2 day.
+- *21/11/2026, E2 off (§0):* no day is an E2 day, and a qualifying day needs a voting plateau. An evidence day is an E1 day. A daily line written while E2 was on is read back the same way.
 - **R2 guard:** passive escalation to WARNING is blocked while the most recent voting plateau of the last 7 days, if there is one, is **clean**. Cooling that holds at 28 W cannot plausibly be failing at lower power.
 
 ### 7.5 Immediate alarms (no persistence; these also run on battery)
@@ -326,6 +333,11 @@ For the Duo seed (R_duty 0.93 %) these are 3 / 8 / 2 / 2.5 %.
 - **(b)** ≥ 5 evidence days within 21 days, at ≥ 2/3 of the qualifying days, **≥ 1 of them an E2 day**, with the R2 guard passing;
 - **(c)** ≥ 3 E2 days within 14 days, with the R2 guard passing;
 - **(d)** in SUSPICION for ≥ 21 days, with ≥ 7 evidence days in the last 21 at ≥ 2/3 of the qualifying days, with the R2 guard passing. This is the plateau-only path; no check is needed.
+- *21/11/2026, E2 off (§0):* routes (b) and (c) cannot fire, not even from E2 days in a restored state. WARNING comes by (a) or (d). WATCH and SUSPICION open on E1 days or a check, and a case's first evidence is a build or a check.
+  - *A case that a build with E2 on left open* is decided again at start (`Engine::restore`), with the event `withdrawn`:
+    - with no E1 evidence day left and no comparable Worse check, it closes as `withdrawn`, which is no earlier sighting;
+    - otherwise it keeps its builds and checks, drops its E2 days, and a light-load first evidence becomes its earliest build or check;
+    - a SUSPICION, or a WARNING by (b) or (c), is decided again from the 14-day tallies without light load, and is never dated earlier than it was suspected. A WARNING by (a) or (d), or a case with a Worse check, keeps its status. (d) never fires with an E2 day in its 21 days, because (b) fires first.
 
 ### 8.1 `first_evidence`
 - **What it holds:** the start time (episode onset or window start) of the **earliest evidence-class record on the case's first evidence day**, with its class, its values against the reference, the key and the top consumers. Example: "build 90.4 °C, throttled 6.8 % (clean 86 °C, 0.9 %), mostly rustc".
@@ -350,6 +362,7 @@ For the Duo seed (R_duty 0.93 %) these are 3 / 8 / 2 / 2.5 %.
 
 ### 8.4 Starvation notice (window only)
 No voting plateau and no qualifying light day for 21 days → "not enough comparable load to judge; run a check?".
+- *21/11/2026, E2 off (§0):* only a voting plateau keeps it away.
 
 ### 8.5 FAN and FAULT (separate from dust, each with its own `first_evidence`)
 - **FAN** is raised by any of:
@@ -380,6 +393,8 @@ Sources: the window's "I've cleaned it" button, with a date picker defaulting to
    - ≥ 3 hot, or ≥ 2 E2 days → **Not improved**: WARNING re-latches in the same case;
    - ≥ 3 clean and 0 hot → the case closes as `verified_by_builds`;
    - otherwise, at day 14, the case closes as `unverified`.
+   - *21/11/2026, E2 off (§0):* R_before has no E2 rate, and E2 days count for nothing here, even ones a restored state still holds.
+     - A passive Not improved that a build with E2 on reached by E2 days alone (fewer than 3 hot builds, no verify check) goes back to VERIFYING at start. The builds then decide, and `known_clean_until` returns to the clean date + 30 days. The references that the Not improved dropped stay dropped.
 
 **With no case open** (first start, or a preventive clean):
 - set `known_clean_until` to the date + 30 days;
@@ -547,6 +562,7 @@ fan_ss < R_fan − 400 **and** T_ss ≥ R_T − 1 raises FAN with "fan slower th
   - `events.jsonl` and `cases.jsonl` fsync every line;
   - `records.jsonl` and `daily.jsonl` fsync at episode close and day settle.
 - **`schema`** (file layout) and **`rules_version`** (thresholds) are separate integers. Every record carries `rules_version`.
+  - *21/11/2026:* `rules_version` stays 1 with E2 off (§0). No store had been written yet, so 1 names the first rules that ran. Bump it when E2 comes back, since that changes what a day counts.
 - **Reading:** readers use `#[serde(default)]` everywhere and ignore unknown fields.
 - **Upgrades and downgrades:**
   - a service that finds a **higher** `schema` refuses to write and exits 1;
@@ -615,6 +631,7 @@ fan_ss < R_fan − 400 **and** T_ss ≥ R_T − 1 raises FAN with "fan slower th
    "post_clean": "restored|improved|not_improved|null", "t_ss": …, "duty": …, "fan": …, "label": "Restored"}
   ```
 - **`notices[]`:** `{id, since: Stamp, text}`.
+- *21/11/2026, E2 off (§0):* `classes` is `["E1", "check"]`, and the new `"throttle_counter": true` says the counter exists, which `classes` no longer shows. The example's route (b) and `e2_days` cannot occur meanwhile.
 
 ### 11.4 Presentation contract (`present.rs` writes it; consumers only map tone → token)
 Tones map to tokens as follows: `amber` → `WARN_AMBER`, `red` → `RED`, `purple` → `PURPLE`, `green` → `OK_GREEN`, `neutral` → `TEXT_MUTED`.
@@ -647,13 +664,16 @@ Tones map to tokens as follows: `amber` → `WARN_AMBER`, `red` → `RED`, `purp
   - each line: `{"seq":17,"at":Stamp,"type":"first_evidence","case":"c-…","text":"First evidence: build 90.4 °C, throttled 6.8 % …","data":{…}}`;
   - types: `setup`, `first_evidence`, `suspicion`, `warning`, `check_start`, `check_result`, `cleaned` (with the date she gave), `verification`, `not_improved`, `lapse`, `cleared_by_check`, `not_dust`, `snooze`, `fan`, `fan_fixed`, `fan_accepted`, `fault`, `fault_ack`, `reference`, `config_change`, `bios_change`, `notice`;
   - `config_change` is logged only for profile, EPP, PL, TCC, no_turbo or max_perf_pct changes that last ≥ 10 min. AC and lid flips go to the journal only;
-  - a notice is logged at most once per id per day.
+  - a notice is logged at most once per id per day;
+  - *21/11/2026, E2 off (§0):* new type `withdrawn`, for a case or Not improved from a build with E2 on that was decided again at start (§8, §9.1).
 - **`records.jsonl`:**
   - plateau: `{"type":"plateau", id, rules_version, onset, end, key_id, bios, cpu, duration_s, measurable_s, blocks, valid_blocks, t_ss, t_p90, duty, cold_frac, prochot_frac, fan_med, f_med, core_spread, core_throttle_share[4], deficit_frac, reconcile_share, igpu_act_med, top[[comm,share]×3], early{t_first_throttle,duty_early,t_fan6500}, flags[], verdict}`;
   - light: `{"type":"light", id, start, busy, threads, t_p90, t_max, fan_p90, hot_ms, cold_ms, reconcile_share, deficit, top, verdict}`. Only hot and cold-throttle windows are written; the others only feed counts;
   - unjudged: `{"type":"unjudged", onset, duration_s, reason}`.
 - **`daily.jsonl`:** `{"day":"2026-12-03","bins":{"lt5":{min,thr_ms,hot_ms,t_med,fan_med},"5_30":…,"30_60":…,"60_85":…,"ge85":…},"voting":2,"hot":1,"clean":1,"light_q":214,"light_hot":0,"qualifying":true,"e1":true,"e2":false,"unjudged":{…}}`.
+  - *21/11/2026, E2 off (§0):* `light_q` and `light_hot` stay 0 and `e2` false. `light_keys` still counts the windows seen per key.
 - **`cases.jsonl`:** `{id, opened, first_evidence, closed, outcome: verified_clean|verified_by_builds|improved|lapsed|cleared_by_check|dismissed|unverified, cleaned[], check_dirs[], summary}`.
+  - *21/11/2026, E2 off (§0):* new outcome `withdrawn`, for a case that rested on E2 evidence alone (§8). A reader one version behind reads it as `unverified`.
 - **`references.json`:** `{"schema":1,"keys":{"<key id>":{"active":{t,duty,fan,f,work,djc,ths,floor,t_cool,source,label,bios,cpu,generator,provisional[],accepted},"best":{…},"passive":{state:learning|learned|suspect,n,days,t,duty,fan,accepted},"light":{n,p90,accepted}}}}`.
   - Provenance labels use full dates, for example `learned 21/11/2026-20/12/2026`.
 - **`checks/<dir>/`:**
@@ -721,6 +741,7 @@ status   WARNING since 5/12/2026 10:31 · first evidence 3/12/2026 14:05
 evidence 4 of 6 qualifying days in 21 (light-load on 1) · last build 5/12/2026 10:22 89.6 °C 5.1 % fan 6900 hot
 fan ok 6800 rpm · fault none · notices none · unjudged 30 d: too_short 31, dips 6, slope 1
 ```
+- *21/11/2026, E2 off (§0):* the `reference` line ends "light load off" whenever `classes` lacks E2, in place of "412/300 learned". The "(light-load on N)" suffix cannot appear, because no open case holds E2 days: one that a build with E2 on left behind is decided again at start (§8).
 
 ### 12.3 Socket protocol
 - **Format:** NDJSON in MinkaSyu's `handle_line` shape (`MinkaSyu/src/main.rs:676-708`):
@@ -871,6 +892,7 @@ systemctl --user enable --now minka-thermal.service
 - **Right column:**
   - a **Now** card: pkg T, fan, busy and B10, throttle ms/s, f, iGPU MHz, AC and lid, and the episode state;
   - a **Last 21 days** strip of day squares, with qualifying / evidence / E2 counts, drift and the unjudged total.
+- *21/11/2026, E2 off (§0):* light load is off when `classes` lacks E2; `throttle_counter` says whether the machine has the counter at all. Then the WARNING line has no "light load ×N", the warning text has no light-load clause (WARNING comes by (a) or (d) only, §8), the 21-day strip has no E2 count, and LEARNING shows build learning only.
 - **Banners above the card:**
   - FAN: amber, with [Fan fixed] [Accept fan as normal];
   - FAULT: red, with [Acknowledge];
@@ -913,6 +935,7 @@ systemctl --user enable --now minka-thermal.service
   - no qualifying data: `SURFACE_RAISED`;
   - the first-evidence day gets a 1 px `TEXT` outline.
 - **Rows:** dense mono rows, `d/M/yyyy HH:mm · type · text`.
+- *21/11/2026, E2 off (§0):* no day carries the "L". The Light load filter still lists the recorded windows (hot and cold-throttle), which count for nothing. A `withdrawn` case (§8) shows with its outcome, not as a dust interval.
 
 ### 13.6 References page
 - **A table per key:**
@@ -920,6 +943,7 @@ systemctl --user enable --now minka-thermal.service
   - R_best;
   - R_passive (learning n/8 and days, learned, suspect or accepted);
   - the light reference (n/300, p90);
+    - *21/11/2026, E2 off (§0):* when `classes` lacks E2, this row reads "light load off" in place of n/300 and p90. Nothing is learned, so `learning.light_windows` stays 0 against `light_needed` 300, and showing that as progress would suggest a learn that is stuck;
   - BIOS, CPU and generator.
 - **A seed card** with the §6.1 numbers; T_hs, D_jc and floor are marked provisional.
 - **A signals card** (the §19 checks):
@@ -1102,7 +1126,7 @@ pub fn thermal_pill(state: AppState) -> Div {
   set -gx MINKA_THERMAL_BIN $HOME/Documents/src/MinkaDE/MinkaThermal/target/release/minka-thermal
   ```
 - **AGENTS.md component row,** after MinkaMon:
-  `| **MinkaThermal** | Rust service + AntiWebUI window | Cooling watch. A user service compares sustained builds and light-load throttling with a clean reference, warns when the pattern says dust (MinkaShell bar pill, hidden in Duo; MinkaMon amber warning triangle), logs the date of the first evidence, and stays until she marks the laptop cleaned. A 5-minute cooling check, started only by her, confirms and verifies. Duo seed from the 20/11/2026 clean. |`
+  `| **MinkaThermal** | Rust service + AntiWebUI window | Cooling watch. A user service compares sustained builds with a clean reference, warns when the pattern says dust (MinkaShell bar pill, hidden in Duo; MinkaMon amber warning triangle), logs the date of the first evidence, and stays until she marks the laptop cleaned. A 5-minute cooling check, started only by her, confirms and verifies. Duo seed from the 20/11/2026 clean. Light-load throttling (E2) is recorded but is not evidence: she turned it off on 21/11/2026, because bch-reconcile alone throttles the clean machine. |`
 - **AGENTS.md build lines:**
   ```sh
   # MinkaThermal: two crates (MinkaThermal/ = service + CLI, MinkaThermal/gui/ = window)
@@ -1143,7 +1167,7 @@ pub fn thermal_pill(state: AppState) -> Div {
 | Charger deficit | Recorded, not excluded. It matters only through PROCHOT, which xe `reason_prochot` and the cold rule catch. Blocks with > 2 % cold or PROCHOT are void, and counted |
 | Profile, EPP, PL, TCC, lid | In the key. `power_capped` notices. A lower PL hides dust; a higher PL is a new key |
 | Turbo bursts after busy dips | The dip guard, the Theil-Sen block slope, the AND rule, and R_duty learned from her builds and capped at 3 % |
-| bch-reconcile (nice 19, about one core, AC only) | Inside the 28 W cap at the plateau. At light load it *is* the load. Its share and the thread count are recorded, and the light reference is learned on her own clean machine |
+| bch-reconcile (nice 19, about one core, AC only) | Inside the 28 W cap at the plateau. At light load it *is* the load. Its share and the thread count are recorded, and the light reference is learned on her own clean machine. *21/11/2026: alone, it throttled her clean machine 42-48 % at ≥ 86 °C, so E2 is off (§0).* |
 | iGPU (xe) | Light windows need `act_freq` < 900 MHz. At the plateau it sits inside the package cap |
 | dGPU MX450 | `runtime_status` is recorded; the check makes one `nvidia-smi` query. Passive use is not handled (residual) |
 | Workload mix | Power is fixed at PL1; R_passive is learned from her builds and bounded; frequency votes only together with duty |
@@ -1172,7 +1196,7 @@ pub fn thermal_pill(state: AppState) -> Div {
 3. Two reference checks before 20/12/2026: the run-to-run spread, and they become R_active.
 4. Qualifying plateaus per 14 days on her cargo builds. Under 5 → lower the open threshold to B10 ≥ 0.75 or relax the dip guard; judge with `replay`.
 5. R_passive − R_active: expected within ±2 °C, capped at +3.
-6. The learned clean `light_p90` at 1-2 threads (bch-reconcile, links), and so the L line.
+6. The learned clean `light_p90` at 1-2 threads (bch-reconcile, links), and so the L line. *21/11/2026: bch-reconcile alone throttled the clean machine 42-48 % at ≥ 86 °C, so E2 is off (§0) and nothing is learned.*
 7. Charger deficit at full load, and whether it ever comes with PROCHOT.
 8. Whether a ppd profile switch rewrites the MMIO PL.
 9. Whether the badge's sibling click targets in MinkaMon behave.
@@ -1190,7 +1214,8 @@ pub fn thermal_pill(state: AppState) -> Div {
   - rarely sustaining ≥ 120 s at ≥ 85 % busy, or working in unreferenced keys. The unjudged counter and the starvation notice make this visible;
   - dust that stays just under +3 °C / 3 %; the drift line shows it;
   - a lower PL masking dust;
-  - the second fan, which has no sensor.
+  - the second fan, which has no sensor;
+  - *21/11/2026, E2 off (§0):* dust that shows only at light load. Builds and the check must show it.
 - **Not fixable by cleaning:** paste or contact wear is detected, and the post-clean verdicts point at it.
 
 ## 21. Implementation order
@@ -1220,7 +1245,7 @@ pub fn thermal_pill(state: AppState) -> Div {
 ### Review fixes rejected or changed
 
 - **R2 guard kept** (the critic proposed dropping it as room engineering). It is one comparison: a clean plateau at 28 W refutes dust at lower power, whatever the room.
-- **E2 as a precondition:** relaxed, not removed. Routes (b) and (c) still use E2 as the fast paths; the critic's route (d) adds the slower plateau-only path, so no stress test is needed to turn red.
+- **E2 as a precondition:** relaxed, not removed. Routes (b) and (c) still use E2 as the fast paths; the critic's route (d) adds the slower plateau-only path, so no stress test is needed to turn red. *21/11/2026: E2 is off (§0), so (d) is the only passive route to WARNING.*
 - **Lid read:** with the 60-s config poll as well as at edges and gates, not at edges only. Light windows need the lid for their key, and 1.7 ms a minute is negligible.
 - **Fallback writer race:** chose "mutating verbs need the service" over "the service waits for the lock". It is simpler, and the service stays the only writer.
 - **Chassis option:** built as a window control rather than only telling her. Her request names a Duo option.

@@ -1,10 +1,11 @@
 # MinkaThermal
 
 A cooling watch for the Zenbook Duo (and, more roughly, any laptop). A small user service
-compares sustained builds and light-load throttling with a clean reference, and warns when the
-pattern says the laptop needs cleaning. It logs the date and time the first evidence appeared,
-and the warning stays until you say the laptop has been cleaned. A 5-minute cooling check,
-which only you start, confirms a suspicion and verifies a clean.
+compares sustained builds with a clean reference, and warns when the pattern says the laptop
+needs cleaning. It records light-load throttling too, but since 21/11/2026 that counts for
+nothing (section 2). It logs the date and time the first evidence appeared, and the warning
+stays until you say the laptop has been cleaned. A 5-minute cooling check, which only you
+start, confirms a suspicion and verifies a clean.
 
 The full design is [DESIGN.md](DESIGN.md). This file is the short version.
 
@@ -31,10 +32,14 @@ places a warning shows.
     28 W, so the steady temperature and the share of time spent throttling measure the cooling.
   - **Light load (E2):** 5-30 % busy (about one or two threads, such as bch-reconcile). A clean
     machine rarely throttles here; the dusty one on 17/11/2026 throttled about 40 % of the time.
+    **Off since 21/11/2026, by your decision:** on the clean machine, bch-reconcile alone
+    throttled 42-48 % of the time at 86 °C or more, so E2 would warn about a clean laptop.
+    Light-load windows are still recorded, but never count, and the light reference is not
+    learned. Builds and the cooling check decide on their own.
   - Idle temperature and the since-boot throttle counters are shown but never used as evidence.
-- **References are frozen.** The Duo seed comes from the clean of 20/11/2026. Builds and light
-  load are learned only inside a 30-day known-clean window, within bounds, and never drift by
-  themselves.
+- **References are frozen.** The Duo seed comes from the clean of 20/11/2026. Builds (and light
+  load, while E2 is on) are learned only inside a 30-day known-clean window, within bounds, and
+  never drift by themselves.
 - **Evidence has tiers.** One evidence day opens a case (logged only). Repeated days over a
   fortnight give a suspicion. Persistence over the next two to three weeks, or a cooling check
   that reads worse than the reference, latches the warning.

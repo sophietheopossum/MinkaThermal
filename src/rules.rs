@@ -39,10 +39,21 @@ pub const LIGHT_L_FACTOR: f64 = 10.0;
 pub const COLD_WINDOW_DUTY: f64 = 0.01;
 /// Over 10 min of cold throttle in a day raises "throttling while cool".
 pub const COLD_NOTICE_MS: u64 = 600_000;
+/// Whether light-load windows can be dust evidence (E2): what the service passes as
+/// `Machine::light_load_evidence`. Off since 21/11/2026, her decision ("just turn the light load
+/// check off"): on her clean machine bch-reconcile alone, about one core at nice 19, throttled
+/// 42-48 % of light-load time at ≥ 86 °C, so E2 would warn on a clean laptop. Turning it back
+/// on changes what a day counts, so bump `RULES_VERSION` with it. A store written with it on is
+/// read back under the rules in force: days and records in `Engine::restore`, and an open case
+/// there too (`reconsider_light_case`).
+pub const LIGHT_LOAD_EVIDENCE: bool = false;
 /// An E2 evidence day: 10 hot windows (§7.4).
 pub const E2_DAY_WINDOWS: u32 = 10;
 /// A qualifying day by light load alone: 30 voting windows.
 pub const QUALIFYING_LIGHT: u32 = 30;
+/// Passive Not improved (§9.1): this many hot builds, or E2 days, since the clean.
+const NOT_IMPROVED_HOT: u32 = 3;
+const NOT_IMPROVED_E2_DAYS: u32 = 2;
 pub const FAN_SLOW_MARGIN: f64 = 400.0;
 /// Fan stopped: 0 rpm for 20 s while T ≥ 85 °C (§7.5).
 pub const FAN_STOPPED_S: f64 = 20.0;
@@ -329,6 +340,12 @@ pub struct Machine {
     pub tjmax_c: Option<f64>,
     pub has_fan: bool,
     pub has_throttle: bool,
+    /// Light-load windows can be dust evidence (E2). Off, on every chassis (`LIGHT_LOAD_EVIDENCE`):
+    /// a light window never votes, so it makes no E2 day, no qualifying day and no first evidence,
+    /// and the light reference is not learned. Windows are still recorded, and cold throttle
+    /// still raises "throttling while cool". Tests of the E2 rules turn it on.
+    pub light_load_evidence: bool,
+    /// Without E2 while `light_load_evidence` is off (`Engine::new` drops it).
     pub classes: Vec<String>,
 }
 
@@ -461,6 +478,20 @@ impl Day {
     }
 }
 
+impl Candidate {
+    fn first_evidence(&self) -> FirstEvidence {
+        FirstEvidence {
+            label: self.at.label(),
+            at: self.at.clone(),
+            class: self.class.to_owned(),
+            summary: self.summary.clone(),
+            record_id: self.record_id.clone(),
+            key_id: self.key_id.clone(),
+            top: self.top.clone(),
+        }
+    }
+}
+
 /// A plateau with metrics, for the 7-day medians, drift, R2 and verification.
 #[derive(Clone, Debug)]
 struct PlateauSum {
@@ -502,6 +533,13 @@ struct Tally {
     evidence: u32,
     e2: u32,
     qualifying: u32,
+}
+
+impl Tally {
+    /// WATCH → SUSPICION over 14 days (§8): ≥ 2 evidence days, at least half the qualifying ones.
+    fn suspicious(&self) -> bool {
+        self.evidence >= 2 && 2 * self.evidence >= self.qualifying
+    }
 }
 
 pub struct Engine {
@@ -594,7 +632,10 @@ fn before(at: &Stamp, reset: Option<i64>) -> bool {
 
 impl Engine {
     /// `state` is the loaded state.json, None on the very first start.
-    pub fn new(machine: Machine, state: Option<State>, refs: References, now: &Moment) -> Engine {
+    pub fn new(mut machine: Machine, state: Option<State>, refs: References, now: &Moment) -> Engine {
+        if !machine.light_load_evidence {
+            machine.classes.retain(|c| c != "E2");
+        }
         let fresh = state.is_none();
         // The versions are stamped just below, so the default is State::new().
         let mut state = state.unwrap_or_default();
@@ -615,6 +656,7 @@ impl Engine {
             tcc_c: state.chassis.tcc_c,
         };
         state.classes = machine.classes.clone();
+        state.throttle_counter = Some(machine.has_throttle);
         let mut e = Engine {
             state,
             refs,
@@ -682,6 +724,10 @@ impl Engine {
         now: &Moment,
     ) {
         let oldest = now.date().add_days(-KEEP_DAYS);
+        // With light-load evidence off, light windows do not vote. A daily line written while it
+        // was on keeps its builds only (no E2 day, qualifying by builds alone), and a light record
+        // adds only its cold throttle and its count per key.
+        let light = self.light_evidence();
         for line in daily {
             let Some(d) = Date::parse_key(&line.day) else {
                 continue;
@@ -704,8 +750,8 @@ impl Engine {
                 voting: line.voting,
                 hot: line.hot,
                 clean: line.clean,
-                light_q: line.light_q,
-                light_hot: line.light_hot,
+                light_q: if light { line.light_q } else { 0 },
+                light_hot: if light { line.light_hot } else { 0 },
                 light_cold_ms: line.light_cold_ms,
                 light_keys: line
                     .light_keys
@@ -722,8 +768,12 @@ impl Engine {
                     .collect(),
                 unjudged: line.unjudged.clone(),
                 e1: line.e1,
-                e2: line.e2,
-                qualifying: line.qualifying,
+                e2: light && line.e2,
+                qualifying: if light {
+                    line.qualifying
+                } else {
+                    line.voting >= 1 || line.e1
+                },
                 settled: true,
                 observed: minutes > 0.0 || line.voting > 0 || line.light_q > 0,
                 ..Day::default()
@@ -818,7 +868,7 @@ impl Engine {
                     lk.q += 1;
                     x.observed = true;
                     x.light_cold_ms += l.cold_ms;
-                    if before(&l.start, reset) {
+                    if before(&l.start, reset) || !light {
                         continue;
                     }
                     if voting {
@@ -843,7 +893,7 @@ impl Engine {
         }
         // E2 days of unsettled days count as decided.
         for x in self.days.values_mut() {
-            if !x.settled && x.light_hot >= E2_DAY_WINDOWS {
+            if light && !x.settled && x.light_hot >= E2_DAY_WINDOWS {
                 x.e2 = true;
             }
         }
@@ -884,6 +934,7 @@ impl Engine {
             .map(|(d, _)| *d)
             .min();
         self.today = after_settled.into_iter().chain(first_open).min();
+        self.reconsider_light_case(records, now);
         self.refresh(now);
         present::recompute(&mut self.state, now);
     }
@@ -971,6 +1022,12 @@ impl Engine {
         self.state.chassis.setting = setting;
         self.refresh(now);
         present::recompute(&mut self.state, now);
+    }
+
+    /// Whether light-load windows can be dust evidence (E2), off since 21/11/2026. Every rule
+    /// that lets a light window vote, learn or count asks this.
+    fn light_evidence(&self) -> bool {
+        self.machine.light_load_evidence
     }
 
     fn judge_ctx(&self) -> JudgeCtx {
@@ -1496,8 +1553,13 @@ impl Engine {
         };
         let (verdict, voting) = judge_light(&rec, &view, &self.judge_ctx());
         rec.verdict = verdict;
+        // Off (21/11/2026): the window is recorded, counted per key and its cold throttle added
+        // up. It does not vote, so it makes no E2 day, no qualifying day and no first evidence. The
+        // light reference is not learned either: what it would learn now includes the reconcile
+        // windows that made E2 unusable, and a capped learn would tell her to check the vents.
+        let light = self.light_evidence();
 
-        if !self.dust_case_open() {
+        if light && !self.dust_case_open() {
             let verified = self.in_window(day);
             let hold = self.state.status == Status::Verifying;
             let k = self.refs.keys.entry(w.key_id.clone()).or_default();
@@ -1521,14 +1583,14 @@ impl Engine {
         if duty_hot > 0.0 {
             lk.values.push(duty_hot);
         }
-        if voting {
+        if light && voting {
             x.light_q += 1;
         }
         let cold_before = x.light_cold_ms;
         x.light_cold_ms += w.cold_ms;
         let cold_crossed = cold_before <= COLD_NOTICE_MS && x.light_cold_ms > COLD_NOTICE_MS;
         let mut e2_now = false;
-        if verdict == LightVerdict::Hot {
+        if light && verdict == LightVerdict::Hot {
             x.light_hot += 1;
             x.offer(Self::light_candidate(&rec, view.light_p90));
             if x.light_hot == E2_DAY_WINDOWS && !x.e2 {
@@ -1679,15 +1741,7 @@ impl Engine {
         let mut case = Case {
             id: case_id(&first.at),
             opened: now.stamp(),
-            first_evidence: Some(FirstEvidence {
-                label: first.at.label(),
-                at: first.at.clone(),
-                class: first.class.to_owned(),
-                summary: first.summary.clone(),
-                record_id: first.record_id.clone(),
-                key_id: first.key_id.clone(),
-                top: first.top.clone(),
-            }),
+            first_evidence: Some(first.first_evidence()),
             earlier_sighting: earlier.clone(),
             ..Case::default()
         };
@@ -1754,8 +1808,7 @@ impl Engine {
         };
         if let Some((route, t)) = route {
             self.warn(route, present::warning_event(route, t.evidence, t.qualifying, t.e2), now);
-        } else if status == Status::Watch && w14.evidence >= 2 && 2 * w14.evidence >= w14.qualifying
-        {
+        } else if status == Status::Watch && w14.suspicious() {
             if let Some(c) = &mut self.state.case {
                 c.suspected_at = Some(now.stamp());
             }
@@ -1874,10 +1927,13 @@ impl Engine {
             return;
         }
         let label = v.label.clone();
-        if pv.hot >= 3 || pv.e2_days >= 2 {
+        // A state from a build with light-load evidence on may hold E2 days; with it off they
+        // count for nothing.
+        let e2_days = if self.light_evidence() { pv.e2_days } else { 0 };
+        if pv.hot >= NOT_IMPROVED_HOT || e2_days >= NOT_IMPROVED_E2_DAYS {
             self.not_improved(
-                present::not_improved_event(&label, pv.hot, pv.e2_days),
-                json!({"hot": pv.hot, "e2_days": pv.e2_days}),
+                present::not_improved_event(&label, pv.hot, e2_days),
+                json!({"hot": pv.hot, "e2_days": e2_days}),
                 now,
             );
         } else if pv.clean >= 3 && pv.hot == 0 {
@@ -1908,6 +1964,225 @@ impl Engine {
         self.state.known_clean_until = None;
         self.settle_held(false);
         self.event(now, EventKind::NotImproved, text, data);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // A case left open by a build with light-load evidence on.
+
+    /// With light-load evidence off, an open case that a build with it on left behind is decided
+    /// again at start, from the evidence in force. `restore` has already rebuilt the days without
+    /// light load; the case is what would otherwise carry it on: a WARNING by route (b) or (c), a
+    /// SUSPICION whose clock counts toward route (d), passive learning blocked while it is open.
+    /// - **Light load alone** (no build evidence day left, no comparable Worse check): the case
+    ///   closes as `withdrawn`, which is no earlier sighting. Nothing is reset: its days already
+    ///   count without their light load.
+    /// - **Builds or a check as well:** the case keeps those. Its light-load days go, and a
+    ///   light-load first evidence becomes its earliest build or check. A SUSPICION, or a WARNING
+    ///   by (b) or (c), is decided again from the 14-day tallies, never as suspected earlier than
+    ///   it was. A WARNING by (a) or (d), and a case with a Worse check, keep their status: (a) is
+    ///   the check, and (d) only fires with no E2 day in its 21 days, since (b) would come first.
+    /// - **A Not improved after a clean:** `reconsider_not_improved`.
+    fn reconsider_light_case(&mut self, records: &[Record], now: &Moment) {
+        if self.light_evidence() || !self.dust_case_open() {
+            return;
+        }
+        if self.state.verification.is_some() {
+            self.reconsider_not_improved(now);
+            return;
+        }
+        let Some(case) = self.state.case.clone() else {
+            return;
+        };
+        let light_first = case.first_evidence.as_ref().is_some_and(|f| f.class == "E2");
+        if case.e2_days.is_empty() && !light_first {
+            return;
+        }
+        let known = |k: &String| Date::parse_key(k).and_then(|d| self.days.get(&d));
+        // An E2 day stays when its daily line says it was a build evidence day too. One older
+        // than the tallies cannot be told, and goes with its light load.
+        let evidence: Vec<String> = case
+            .evidence_days
+            .iter()
+            .filter(|k| !case.e2_days.contains(k) || known(k).is_some_and(|x| x.settled && x.e1))
+            .cloned()
+            .collect();
+        let qualifying: Vec<String> = case
+            .qualifying_days
+            .iter()
+            .filter(|k| match known(k) {
+                Some(x) => x.voting >= 1 || x.e1,
+                None => !case.e2_days.contains(k),
+            })
+            .cloned()
+            .collect();
+        let worse = case
+            .checks
+            .iter()
+            .filter(|c| c.verdict == Some(CheckVerdict::Worse) && !c.anyway)
+            .min_by_key(|c| c.at.unix());
+        let first = self.first_label();
+        let status = self.state.status;
+        if evidence.is_empty() && worse.is_none() {
+            let text = present::withdrawn_event(&first);
+            self.event(
+                now,
+                EventKind::Withdrawn,
+                text.clone(),
+                json!({"status": status, "route": case.route, "e2_days": case.e2_days.len()}),
+            );
+            self.close_case(CaseOutcome::Withdrawn, now, text);
+            return;
+        }
+        let redecide = worse.is_none()
+            && !case.e2_days.is_empty()
+            && match status {
+                Status::Suspicion => true,
+                Status::Warning => matches!(case.route.as_deref(), Some("b" | "c")),
+                _ => false,
+            };
+        let new_first = if light_first {
+            self.first_in_force(&evidence, worse, records)
+        } else {
+            None
+        };
+        let mut kept = case.clone();
+        if redecide {
+            let suspected = evidence
+                .first()
+                .and_then(|k| Date::parse_key(k))
+                .and_then(|from| self.suspected_without_light(from, now))
+                .map(|s| match &case.suspected_at {
+                    Some(old) if old.unix() > s.unix() => old.clone(),
+                    _ => s,
+                });
+            kept.route = None;
+            kept.warning_since = None;
+            self.state.status = if suspected.is_some() {
+                Status::Suspicion
+            } else {
+                Status::Watch
+            };
+            kept.suspected_at = suspected;
+        }
+        let build_days = evidence.len();
+        kept.evidence_days = evidence;
+        kept.qualifying_days = qualifying;
+        kept.e2_days.clear();
+        if let Some(f) = new_first {
+            kept.first_evidence = Some(f);
+        }
+        let changed = (self.state.status != status).then_some(self.state.status);
+        if kept == case && changed.is_none() {
+            return;
+        }
+        let text = present::light_days_dropped_event(&first, build_days, worse.is_some(), changed);
+        self.state.case = Some(kept);
+        self.event(
+            now,
+            EventKind::Withdrawn,
+            text,
+            json!({"status": self.state.status, "was": status, "route": case.route,
+                   "e2_days": case.e2_days.len()}),
+        );
+    }
+
+    /// When the 14-day tallies, which no longer count light load, first made the case a
+    /// SUSPICION: the settle of the first day from `from` (its first build evidence day) to the
+    /// last settled one on which `escalate` would have promoted it. None if no day did.
+    fn suspected_without_light(&self, from: Date, now: &Moment) -> Option<Stamp> {
+        let last = self.today?.add_days(-1);
+        let mut d = from;
+        while d <= last {
+            if self.tally(d, 14).suspicious() {
+                let next = d.add_days(1);
+                return Some(Stamp::at(next.days() * 86_400 - now.offset_s as i64, now.offset_s));
+            }
+            d = d.add_days(1);
+        }
+        None
+    }
+
+    /// A first evidence that is not light load: the earliest hot voting plateau of the first
+    /// build evidence day in `evidence`, or the earliest comparable Worse check if that came
+    /// first. None when neither is at hand (that day's records are gone).
+    fn first_in_force(
+        &self,
+        evidence: &[String],
+        worse: Option<&CaseCheck>,
+        records: &[Record],
+    ) -> Option<FirstEvidence> {
+        let reset = self.state.evidence_reset_at.as_ref().and_then(Stamp::unix);
+        let judge = self.judge_ctx();
+        let day = evidence.first().and_then(|k| Date::parse_key(k));
+        let build = records
+            .iter()
+            .filter_map(|r| match r {
+                Record::Plateau(p) => Some(p),
+                _ => None,
+            })
+            .filter(|p| {
+                p.verdict == PlateauVerdict::Hot
+                    && !p.flags.iter().any(|f| f == "no_reference")
+                    && day.is_some()
+                    && stamp_date(&p.end) == day
+                    && !before(&p.onset, reset)
+            })
+            .min_by_key(|p| p.onset.unix())
+            .map(|p| {
+                let against = judge_plateau(p, &self.view(&p.key_id), &judge).against;
+                Self::plateau_candidate(p, against)
+            });
+        let check = worse.map(|c| Candidate {
+            unix: c.at.unix().unwrap_or_default(),
+            at: c.at.clone(),
+            class: "check",
+            summary: present::check_summary(
+                c.t_ss,
+                c.duty,
+                self.view(&c.key_id).active.as_ref().and_then(|a| a.t.zip(a.duty)),
+            ),
+            record_id: None,
+            key_id: c.key_id.clone(),
+            top: Vec::new(),
+        });
+        build
+            .into_iter()
+            .chain(check)
+            .min_by_key(|c| c.unix)
+            .map(|c| c.first_evidence())
+    }
+
+    /// A Not improved after a clean (WARNING re-latched, `verification` kept) that light-load
+    /// days alone decided: passive, with too few hot builds for it, and no verify check. With
+    /// light-load evidence off it goes back to VERIFYING, so that the builds decide, and the
+    /// clean's known-clean window stands again. The references re-learned since the clean, which
+    /// the Not improved dropped, stay dropped.
+    fn reconsider_not_improved(&mut self, now: &Moment) {
+        let Some(v) = &self.state.verification else {
+            return;
+        };
+        let by_light = self.state.status == Status::Warning
+            && v.verdict == Some(PostClean::NotImproved)
+            && v.check_dir.is_none()
+            && v.passive
+                .as_ref()
+                .is_some_and(|p| p.hot < NOT_IMPROVED_HOT && p.e2_days >= NOT_IMPROVED_E2_DAYS);
+        if !by_light {
+            return;
+        }
+        let until = stamp_date(&v.cleaned_at).map(|d| d.add_days(references::KNOWN_CLEAN_DAYS));
+        let text = present::not_improved_withdrawn_event(&v.label);
+        self.event(
+            now,
+            EventKind::Withdrawn,
+            text,
+            json!({"status": Status::Verifying, "was": Status::Warning}),
+        );
+        if let Some(v) = &mut self.state.verification {
+            v.verdict = None;
+        }
+        self.state.status = Status::Verifying;
+        self.state.known_clean_until = until.map(|d| d.key());
     }
 
     // -----------------------------------------------------------------------------------------
@@ -2271,10 +2546,13 @@ impl Engine {
         }
         let week = cleaned - 7 * 86_400;
         let end = stamp_date(cleaned_at).unwrap_or(Date::from_days(cleaned.div_euclid(86_400)));
-        let e2_per_day = (0..7)
-            .map(|i| self.days.get(&end.add_days(-i)).map_or(0, |x| x.light_hot))
-            .sum::<u32>() as f64
-            / 7.0;
+        // None while light-load evidence is off: no window is counted hot then.
+        let e2_per_day = self.light_evidence().then(|| {
+            (0..7)
+                .map(|i| self.days.get(&end.add_days(-i)).map_or(0, |x| x.light_hot))
+                .sum::<u32>() as f64
+                / 7.0
+        });
         let from = |ps: Vec<&PlateauSum>, source: &str| -> Option<RBefore> {
             if ps.is_empty() {
                 return None;
@@ -2285,7 +2563,7 @@ impl Engine {
                 t_ss: median(&ps.iter().map(|p| p.t).collect::<Vec<_>>()),
                 duty: median(&ps.iter().map(|p| p.duty).collect::<Vec<_>>()),
                 fan: median(&fans),
-                e2_per_day: Some(e2_per_day),
+                e2_per_day,
             })
         };
         // Builds under the case's key only, as for the before-check: another profile's builds,
@@ -2315,9 +2593,9 @@ impl Engine {
             })
             .collect();
         from(hot, "case").or_else(|| {
-            (e2_per_day > 0.0).then(|| RBefore {
+            e2_per_day.filter(|r| *r > 0.0).map(|r| RBefore {
                 source: "case".to_owned(),
-                e2_per_day: Some(e2_per_day),
+                e2_per_day: Some(r),
                 ..RBefore::default()
             })
         })
@@ -2404,11 +2682,14 @@ impl Engine {
                 (n, v)
             }
         });
+        // The light reference is not re-learned while light-load evidence is off, as it is not
+        // learned then either.
+        let light = self.light_evidence();
         let k = self.refs.keys.entry(key_id.clone()).or_default();
         if let Some((a, _)) = &adopted {
             references::accept(k, a, today, &bios, &cpu);
         }
-        if n > 0 {
+        if light && n > 0 {
             references::accept_light(k, n, &values, today);
             if n >= 30 {
                 self.clear_notice(notice::LIGHT_CAP);
