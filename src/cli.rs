@@ -736,8 +736,8 @@ pub const GUI_NAME: &str = "minka-thermal-gui";
 pub const UI_LOG_ROLL: u64 = 2 * 1024 * 1024;
 
 /// The window binary (§12.4), searched as MinkaSyu's `find_gui` does: `$MINKA_THERMAL_GUI`, then
-/// beside this binary (installed, both are in /usr/bin), then the checkout's
-/// `gui/target/<profile>/`, then PATH. A set `$MINKA_THERMAL_GUI` is final: if it names nothing,
+/// beside this binary (installed, both are in /usr/bin; in the checkout, both are in the MinkaDE
+/// workspace's `target/<profile>/`), then PATH. A set `$MINKA_THERMAL_GUI` is final: if it names nothing,
 /// that is the error, rather than another build opening instead. Err lists every place tried.
 pub fn find_gui(
     env: &dyn Fn(&str) -> Option<OsString>,
@@ -758,16 +758,6 @@ pub fn find_gui(
             return Ok(beside);
         }
         tried.push(beside.display().to_string());
-        // target/<profile>/minka-thermal → gui/target/<profile>/minka-thermal-gui
-        if let (Some(profile), Some(checkout)) =
-            (dir.file_name(), dir.parent().and_then(Path::parent))
-        {
-            let dev = checkout.join("gui/target").join(profile).join(GUI_NAME);
-            if dev.is_file() {
-                return Ok(dev);
-            }
-            tried.push(dev.display().to_string());
-        }
     }
     match env("PATH") {
         Some(path) => {
@@ -1717,7 +1707,6 @@ fan ok 6800 rpm · fault none · notices none · unjudged 30 d: too_short 31, un
         let tried = find_gui(&env, Some(&exe)).unwrap_err();
         let expected: Vec<String> = [
             beside.clone(),
-            dir.join("co/gui/target/release/minka-thermal-gui"),
             bin.join(GUI_NAME),
             bin2.join(GUI_NAME),
         ]
@@ -1728,12 +1717,6 @@ fan ok 6800 rpm · fault none · notices none · unjudged 30 d: too_short 31, un
 
         put(&dir, "bin2/minka-thermal-gui", "");
         assert_eq!(find_gui(&env, Some(&exe)), Ok(bin2.join(GUI_NAME)));
-        put(&dir, "co/gui/target/release/minka-thermal-gui", "");
-        assert_eq!(
-            find_gui(&env, Some(&exe)),
-            Ok(dir.join("co/gui/target/release/minka-thermal-gui")),
-            "the checkout's window before PATH"
-        );
         put(&dir, "co/target/release/minka-thermal-gui", "");
         assert_eq!(find_gui(&env, Some(&exe)), Ok(beside), "beside this binary first");
 

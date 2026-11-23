@@ -59,7 +59,7 @@ This spec merges three inputs: the detection spec (the judges' Design 3 plus the
 
 ```
 MinkaThermal/
-  Cargo.toml Cargo.lock .gitignore(/target) README.md DESIGN.md
+  Cargo.toml .gitignore(/target) README.md DESIGN.md   (a member of the MinkaDE Cargo workspace)
   src/  main.rs      verb dispatch by hand (as MinkaSyu/src/main.rs:38-69, no clap); env → Paths here ONLY
         paths.rs     struct Paths {dir, state, lock, socket, settings}; every other module takes &Paths
         cli.rs  clock.rs  sensors.rs  sampler.rs  episodes.rs  rules.rs  profile.rs
@@ -70,13 +70,13 @@ MinkaThermal/
         data/state-{learning,clean,watch,suspicion,warning,verifying,not-improved,fan,fault}.json
         seed.rs   recomputes §6.1 by timestamp (1.062 s/sample, load from idx 60, burn end idx 172)
         rules.rs  synthetic 1 Hz traces → episodes → verdicts → transitions (no sensors, no load)
-  gui/  Cargo.toml Cargo.lock .gitignore
+  gui/  Cargo.toml   (add "MinkaThermal/gui" to the root members in the same change)
         src/ main.rs(--page, --shot) instance.rs link.rs app.rs model.rs files.rs theme.rs
              views/{mod,status,check,history,references,chart}.rs
 ```
 
 **Core `Cargo.toml`:**
-- edition 2024, `[[bin]] minka-thermal`, `[profile.release] lto = "thin"`;
+- edition 2024, `[[bin]] minka-thermal`; no `[profile]` (the root `MinkaDE/Cargo.toml` sets thin LTO for every member);
 - dependencies: `libc` (poll, flock, clock_gettime, localtime_r, killpg, PR_SET_PDEATHSIG, signalfd), `serde` (derive) and `serde_json`;
 - no zbus, no AntiWebUI, no wgpu patch table.
 
@@ -84,7 +84,7 @@ MinkaThermal/
 - `anti-webui = { path = "../../AntiWebUI/src/anti-webui", default-features = false, features = ["wayland", "svg"] }`;
 - `anti-webui-md3e = { path = "../../AntiWebUI/src/anti-webui-md3e" }`;
 - `serde`, and `serde_json` with `preserve_order` (for the settings writer, §13.6);
-- a verbatim copy of MinkaShell's `[patch.crates-io]` wgpu table at bea4dev/wgpu `ff143aeeb126dce521b87f47547565c4b6a6da1e`, the revision in `AntiWebUI/Cargo.lock`.
+- no `[patch]` table or lockfile of its own: the root `MinkaDE/Cargo.toml` carries the wgpu patch and `MinkaDE/Cargo.lock` the versions, for every member.
 
 **Tests never read the environment.** They build `Paths` under `target/test-tmp/`, so a test can never reach her socket or her cleaning history.
 
@@ -768,8 +768,8 @@ fan ok 6800 rpm · fault none · notices none · unjudged 30 d: too_short 31, di
 ### 12.4 `ui`
 1. **Find the GUI** in this order, as MinkaSyu's `find_gui` does (`src/main.rs:446-467`):
    - `$MINKA_THERMAL_GUI`;
-   - `minka-thermal-gui` beside `current_exe`;
-   - in a checkout, `<exe dir>/../../gui/target/<profile>/minka-thermal-gui`;
+   - `minka-thermal-gui` beside `current_exe` (installed, both are in /usr/bin; in a checkout,
+     both are in the MinkaDE Cargo workspace's `target/<profile>/`);
    - PATH.
 
    There is no QML fallback. If nothing is found, name every path tried and exit 1.
@@ -840,8 +840,8 @@ systemctl --user link /home/seirra/Documents/src/MinkaDE/MinkaThermal/dist/minka
 # ~/.config/systemd/user/minka-thermal.service.d/checkout.conf (the portal's override.conf pattern):
 #   [Service]
 #   ExecStart=
-#   ExecStart=%h/Documents/src/MinkaDE/MinkaThermal/target/release/minka-thermal service
-ln -s ~/Documents/src/MinkaDE/MinkaThermal/target/release/minka-thermal ~/.local/bin/minka-thermal
+#   ExecStart=%h/Documents/src/MinkaDE/target/release/minka-thermal service
+ln -s ~/Documents/src/MinkaDE/target/release/minka-thermal ~/.local/bin/minka-thermal
 systemctl --user enable --now minka-thermal.service
 ```
 - **Launcher:** copy `dist/minka-thermal.desktop` to `~/.local/share/applications/MinkaThermal.desktop`, with absolute `Exec=` paths, as her MinkaMon.desktop has.
@@ -1123,14 +1123,15 @@ pub fn thermal_pill(state: AppState) -> Div {
   ```fish
   # MinkaThermal's CLI, which the bar pill and MinkaMon run as `minka-thermal ui`. The service is a
   # systemd user unit and does not read this file (see minka-thermal.service.d/checkout.conf).
-  set -gx MINKA_THERMAL_BIN $HOME/Documents/src/MinkaDE/MinkaThermal/target/release/minka-thermal
+  set -gx MINKA_THERMAL_BIN $HOME/Documents/src/MinkaDE/target/release/minka-thermal
   ```
 - **AGENTS.md component row,** after MinkaMon:
   `| **MinkaThermal** | Rust service + AntiWebUI window | Cooling watch. A user service compares sustained builds with a clean reference, warns when the pattern says dust (MinkaShell bar pill, hidden in Duo; MinkaMon amber warning triangle), logs the date of the first evidence, and stays until she marks the laptop cleaned. A 5-minute cooling check, started only by her, confirms and verifies. Duo seed from the 20/11/2026 clean. Light-load throttling (E2) is recorded but is not evidence: she turned it off on 21/11/2026, because bch-reconcile alone throttles the clean machine. |`
 - **AGENTS.md build lines:**
   ```sh
-  # MinkaThermal: two crates (MinkaThermal/ = service + CLI, MinkaThermal/gui/ = window)
-  cargo build --release && cargo build --release --manifest-path gui/Cargo.toml
+  # MinkaThermal: two crates (MinkaThermal/ = service + CLI, MinkaThermal/gui/ = window),
+  # both members of the MinkaDE Cargo workspace, so both binaries land in MinkaDE/target/release
+  cargo build --release -p minka-thermal -p minka-thermal-gui
   systemctl --user restart minka-thermal     # the running service holds the old inode until then
   cargo test                                 # tests build Paths under target/test-tmp; they never read the env
   ```

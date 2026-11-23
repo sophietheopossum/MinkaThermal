@@ -75,14 +75,14 @@ pattern) with:
 ```ini
 [Service]
 ExecStart=
-ExecStart=%h/Documents/src/MinkaDE/MinkaThermal/target/release/minka-thermal service
+ExecStart=%h/Documents/src/MinkaDE/target/release/minka-thermal service
 ```
 
 and run:
 
 ```sh
 systemctl --user link /home/seirra/Documents/src/MinkaDE/MinkaThermal/dist/minka-thermal.service
-ln -s ~/Documents/src/MinkaDE/MinkaThermal/target/release/minka-thermal ~/.local/bin/minka-thermal
+ln -s ~/Documents/src/MinkaDE/target/release/minka-thermal ~/.local/bin/minka-thermal
 systemctl --user enable --now minka-thermal.service
 minka-thermal cleaned --date 20/11/2026
 ```
@@ -147,7 +147,7 @@ and writes nothing. The service's own log goes to the journal
 | Variable | Effect |
 |---|---|
 | `MINKA_THERMAL_BIN` | the CLI the bar pill and MinkaMon run as `minka-thermal ui` (set in `shojiwm-env.fish`) |
-| `MINKA_THERMAL_GUI` | the window binary `ui` runs; otherwise beside the CLI, then `gui/target/<profile>/` in a checkout, then PATH |
+| `MINKA_THERMAL_GUI` | the window binary `ui` runs; otherwise beside the CLI (in a checkout, both are in the MinkaDE workspace's `target/<profile>/`), then PATH |
 | `MINKA_THERMAL_STATE` | moves the whole store (every file sits beside `state.json`); the socket moves with it |
 | `MINKA_THERMAL_SOCKET` | the socket path |
 
