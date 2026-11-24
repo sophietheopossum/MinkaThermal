@@ -32,14 +32,10 @@ pub const SCHEMA: u32 = 1;
 pub const RULES_VERSION: u32 = 1;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// One log line on stderr (the journal, under the unit). The line is formatted first and written
-/// with a single `write_all`, so lines from the service and its burn child never interleave.
+/// One log line on stderr (the journal, under the unit). `minka_note` writes it with a single
+/// write(2), so lines from the service and its burn child never interleave.
 pub fn note(text: std::fmt::Arguments) {
-    use std::fmt::Write as _;
-    use std::io::Write as _;
-    let mut line = String::with_capacity(128);
-    let _ = writeln!(line, "minka-thermal: {text}");
-    let _ = std::io::stderr().write_all(line.as_bytes());
+    minka_note::note!("minka-thermal: {text}");
 }
 
 /// `minka-thermal`: verb dispatch by hand (as MinkaSyu's, no clap).
