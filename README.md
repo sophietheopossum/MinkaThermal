@@ -67,22 +67,10 @@ places a warning shows.
 
 ## 4. First start
 
-The unit file says `/usr/bin/minka-thermal`, which is the packaged path, so a checkout needs a
-drop-in. Build first (`cargo build --release`), then create
-`~/.config/systemd/user/minka-thermal.service.d/checkout.conf` (the portal's `override.conf`
-pattern) with:
-
-```ini
-[Service]
-ExecStart=
-ExecStart=%h/Documents/src/MinkaDE/target/release/minka-thermal service
-```
-
-and run:
+MinkaThermal is part of MinkaDE's one binary, `minka`. The minkade package installs
+`/usr/bin/minka-thermal` (a link to it) and the unit, so after installing it run:
 
 ```sh
-systemctl --user link /home/seirra/Documents/src/MinkaDE/MinkaThermal/dist/minka-thermal.service
-ln -s ~/Documents/src/MinkaDE/target/release/minka-thermal ~/.local/bin/minka-thermal
 systemctl --user enable --now minka-thermal.service
 minka-thermal cleaned --date 20/11/2026
 ```
@@ -92,11 +80,10 @@ minka-thermal cleaned --date 20/11/2026
 - Then run **two reference checks on different days before 20/12/2026**
   (`minka-thermal check`, about 5 minutes of all-core load each, on a hard surface, on AC, in
   the performance profile). They replace the seed as the reference.
-- **After each `cargo build --release`:** `systemctl --user restart minka-thermal`. The running
+- **After each package upgrade:** `systemctl --user restart minka-thermal`. The running
   service keeps the old binary until then, and a restart loses only a build in progress.
-- **Launcher:** copy `dist/minka-thermal.desktop` to
-  `~/.local/share/applications/MinkaThermal.desktop` with absolute `Exec=` paths, once the
-  window exists.
+- **Launcher:** the package installs `dist/minka-thermal.desktop`; it opens the window once
+  the window exists.
 
 ## 5. The CLI
 
@@ -147,7 +134,7 @@ and writes nothing. The service's own log goes to the journal
 | Variable | Effect |
 |---|---|
 | `MINKA_THERMAL_BIN` | the CLI the bar pill and MinkaMon run as `minka-thermal ui` (set in `shojiwm-env.fish`) |
-| `MINKA_THERMAL_GUI` | the window binary `ui` runs; otherwise beside the CLI (in a checkout, both are in the MinkaDE workspace's `target/<profile>/`), then PATH |
+| `MINKA_THERMAL_GUI` | the window binary `ui` runs; otherwise `minka-thermal-gui` beside the CLI (in /usr/bin, once the window is part of `minka`), then PATH |
 | `MINKA_THERMAL_STATE` | moves the whole store (every file sits beside `state.json`); the socket moves with it |
 | `MINKA_THERMAL_SOCKET` | the socket path |
 

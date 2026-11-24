@@ -126,12 +126,18 @@ pub const SELF_EXE: &str = "/proc/self/exe";
 
 impl Cmd {
     /// This service's own binary, run as the hidden `burn` verb. A path such as
-    /// target/release/minka-thermal can hold a newer build than the one running, whose generator
+    /// /usr/bin/minka-thermal can hold a newer build than the one running, whose generator
     /// would not be the version the check records (§10.4); /proc/self/exe is always this one.
+    /// It is MinkaDE's one binary, so the name to run as goes first.
     pub fn burn(threads: usize) -> Cmd {
         Cmd {
             program: PathBuf::from(SELF_EXE),
-            args: vec!["burn".into(), "--threads".into(), threads.to_string().into()],
+            args: vec![
+                "minka-thermal".into(),
+                "burn".into(),
+                "--threads".into(),
+                threads.to_string().into(),
+            ],
         }
     }
 
@@ -3482,7 +3488,7 @@ mod tests {
     fn the_load_is_this_very_binary() {
         let c = Cmd::burn(8);
         assert_eq!(c.program, Path::new("/proc/self/exe"));
-        assert_eq!(c.args, ["burn", "--threads", "8"]);
+        assert_eq!(c.args, ["minka-thermal", "burn", "--threads", "8"]);
     }
 
     #[test]

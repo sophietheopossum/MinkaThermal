@@ -768,9 +768,13 @@ fan ok 6800 rpm · fault none · notices none · unjudged 30 d: too_short 31, di
 ### 12.4 `ui`
 1. **Find the GUI** in this order, as MinkaSyu's `find_gui` does (`src/main.rs:446-467`):
    - `$MINKA_THERMAL_GUI`;
-   - `minka-thermal-gui` beside `current_exe` (installed, both are in /usr/bin; in a checkout,
-     both are in the MinkaDE Cargo workspace's `target/<profile>/`);
+   - `minka-thermal-gui` beside `current_exe` (installed, every name is a link in /usr/bin to
+     MinkaDE's one binary, `minka`);
    - PATH.
+
+   Once the window is a library in `minka` (23/11/2026: every Minka app is), this becomes what
+   MinkaSyu's `gui_command` does: `/proc/self/exe` started as `minka-thermal-gui`, so the window
+   is always the build the CLI runs.
 
    There is no QML fallback. If nothing is found, name every path tried and exit 1.
 2. **Logging,** when stderr is not a tty: append to `$XDG_STATE_HOME/minka/minka-thermal-ui.log` (default `~/.local/state/minka/`), rolled at 2 MB as `MinkaMon/dist/minkamon:31-42` does. `dup2` it onto stdout and stderr, then write `=== MinkaThermal window starting: <date -Is> ===`.
@@ -834,19 +838,14 @@ Exec=minka-thermal ui --page history
 ```
 `temperature-normal` exists in breeze and breeze-dark on her system.
 
-### 12.7 Running from the checkout (her commands; packaging is out of scope)
+### 12.7 Running it (her commands)
+Since 23/11/2026 MinkaThermal is part of MinkaDE's one binary, and the minkade package installs
+`/usr/bin/minka-thermal`, the unit and the desktop entry:
 ```sh
-systemctl --user link /home/seirra/Documents/src/MinkaDE/MinkaThermal/dist/minka-thermal.service
-# ~/.config/systemd/user/minka-thermal.service.d/checkout.conf (the portal's override.conf pattern):
-#   [Service]
-#   ExecStart=
-#   ExecStart=%h/Documents/src/MinkaDE/target/release/minka-thermal service
-ln -s ~/Documents/src/MinkaDE/target/release/minka-thermal ~/.local/bin/minka-thermal
 systemctl --user enable --now minka-thermal.service
 ```
-- **Launcher:** copy `dist/minka-thermal.desktop` to `~/.local/share/applications/MinkaThermal.desktop`, with absolute `Exec=` paths, as her MinkaMon.desktop has.
 - **First start:** the window's setup card ("When was this laptop last cleaned?" → 20/11/2026), or `minka-thermal cleaned --date 20/11/2026`. Either opens the known-clean window to 20/12/2026. Then run two reference checks on different days before **20/12/2026**.
-- **After each `cargo build --release`:** `systemctl --user restart minka-thermal`. The running service holds the old inode until then, and the restart loses only an open episode.
+- **After each package upgrade:** `systemctl --user restart minka-thermal`. The running service holds the old inode until then, and the restart loses only an open episode.
 
 ---
 
@@ -1119,20 +1118,16 @@ pub fn thermal_pill(state: AppState) -> Div {
 
 ## 16. Repo edits outside MinkaThermal
 
-- **`shojiwm-env.fish`**, after line 30 (`MINKA_MON_DIR`):
-  ```fish
-  # MinkaThermal's CLI, which the bar pill and MinkaMon run as `minka-thermal ui`. The service is a
-  # systemd user unit and does not read this file (see minka-thermal.service.d/checkout.conf).
-  set -gx MINKA_THERMAL_BIN $HOME/Documents/src/MinkaDE/target/release/minka-thermal
-  ```
+- **`shojiwm-env.fish`:** nothing. The bar pill and MinkaMon run `minka-thermal ui` from PATH
+  (the package's `/usr/bin/minka-thermal`); `MINKA_THERMAL_BIN` stays an override.
 - **AGENTS.md component row,** after MinkaMon:
   `| **MinkaThermal** | Rust service + AntiWebUI window | Cooling watch. A user service compares sustained builds with a clean reference, warns when the pattern says dust (MinkaShell bar pill, hidden in Duo; MinkaMon amber warning triangle), logs the date of the first evidence, and stays until she marks the laptop cleaned. A 5-minute cooling check, started only by her, confirms and verifies. Duo seed from the 20/11/2026 clean. Light-load throttling (E2) is recorded but is not evidence: she turned it off on 21/11/2026, because bch-reconcile alone throttles the clean machine. |`
 - **AGENTS.md build lines:**
   ```sh
-  # MinkaThermal: two crates (MinkaThermal/ = service + CLI, MinkaThermal/gui/ = window),
-  # both members of the MinkaDE Cargo workspace, so both binaries land in MinkaDE/target/release
-  cargo build --release -p minka-thermal -p minka-thermal-gui
-  systemctl --user restart minka-thermal     # the running service holds the old inode until then
+  # MinkaThermal: two library crates (MinkaThermal/ = service + CLI, MinkaThermal/gui/ = window),
+  # both in MinkaDE's one binary (minka/), which the minkade package installs
+  cargo build --profile release-fast -p minka
+  systemctl --user restart minka-thermal     # after a package upgrade: the service holds the old inode
   cargo test                                 # tests build Paths under target/test-tmp; they never read the env
   ```
 - **AGENTS.md rule bullet:** agents never run `minka-thermal check` or `burn` (a 5-minute all-core stress test that only her click starts). They never run the mutating verbs (`cleaned`, `not-dust`, `snooze`, `fan-fixed`, `accept-fan`, `ack-fault`) against the live store, which holds her cleaning history. `status`, `sensors`, `history` and `replay` are read-only and fine.

@@ -6,13 +6,11 @@ description = "MinkaThermal: a cooling watch that warns when the laptop needs cl
 license = "MIT"
 
 # The library holds every module so that tests/seed.rs and tests/rules.rs can drive episodes and
-# rules directly; the binary is only the verb dispatch.
+# rules directly. MinkaDE's one binary (minka/, at the top of the checkout) runs its `main` as
+# `minka-thermal`; nothing is built from here alone.
 [lib]
 path = "src/lib.rs"
-
-[[bin]]
-name = "minka-thermal"
-path = "src/main.rs"
+doctest = false
 
 [dependencies]
 libc = "0.2"
