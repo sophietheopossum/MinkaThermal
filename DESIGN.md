@@ -71,7 +71,7 @@ MinkaThermal/
         seed.rs   recomputes §6.1 by timestamp (1.062 s/sample, load from idx 60, burn end idx 172)
         rules.rs  synthetic 1 Hz traces → episodes → verdicts → transitions (no sensors, no load)
   gui/  Cargo.toml   (add "MinkaThermal/gui" to the root members in the same change)
-        src/ main.rs(--page, --shot) instance.rs link.rs app.rs model.rs files.rs theme.rs
+        src/ main.rs(--page, --shot) raise.rs link.rs app.rs model.rs files.rs theme.rs
              views/{mod,status,check,history,references,chart}.rs
 ```
 
@@ -852,9 +852,9 @@ systemctl --user enable --now minka-thermal.service
 ## 13. The window (`minka-thermal-gui`)
 
 ### 13.1 Frame
-- **`main()`:** handle `--shot` first. Then `instance::claim()`, a copy of `MinkaSyu/gui/src/instance.rs` with `LOCK_NAME` "minka-thermal-gui.lock" and `APP_ID` "minka-thermal", plus a page hand-off:
-  - the duplicate writes `page <name>\n`;
-  - the holder reads one line with a 300 ms timeout, forwards it through `ui_channel`, and raises itself through ShojiWM IPC.
+- **`main()`:** handle `--shot` first. Then `minka_instance::claim("minka-thermal-gui")`, as in `MinkaSyu/gui/src/lib.rs`, with a `raise.rs` like `MinkaSyu/gui/src/raise.rs` (`APP_ID` "minka-thermal"), plus a page hand-off:
+  - a duplicate launched with `--page <name>` sends `page <name>` with `minka_instance::request("minka-thermal-gui", …)`, then exits;
+  - the holder takes it as `Event::Request`, forwards it through `ui_channel`, answers, and raises itself through ShojiWM IPC. An `Event::TurnedAway` (a duplicate's probe) only raises it.
 - **App:** `App::new().title("MinkaThermal").app_id("minka-thermal").size(860, 640)`, after `theme::install()`.
   - `theme::install()` calls `set_density(Density::Compact)`, then `set_color_scheme(scheme())`, then `set_theme`, all copied from `MinkaShell/src/theme.rs:65-…/103-…`.
   - `theme.rs` adds `OK_GREEN = 0x7dc98c`, MinkaMon's value.
@@ -1014,7 +1014,7 @@ systemctl --user enable --now minka-thermal.service
   - it runs **only while `thermal.show` is true**; otherwise it clears the cache. A full scan costs about 4 ms on the UI thread;
   - it rechecks the cached PID: `/proc/<pid>/comm` = `minkamon` **and** the basename of `readlink /proc/<pid>/exe` starts with `minkamon`;
   - if the PID is gone, it rescans `/proc/*/comm` at most every 5 s (`tick % 20`).
-- **Doc comment:** never probe `$XDG_RUNTIME_DIR/minkamon.lock`. MinkaMon treats every connection as a second launch and lifts its pad layer (`MinkaMon/src/instance.rs:89-94`, `state.rs:575-610`).
+- **Doc comment:** never probe `$XDG_RUNTIME_DIR/minkamon.lock` by connecting and closing: minka-instance reports that as `Event::TurnedAway`, and MinkaMon raises its window or lifts its pad layer on it (`MinkaMon/src/state.rs`, `service_tick` → `on_duplicate`). A request line (`minka_instance::request`) is dropped instead and the client gets `HungUp`, which shows MinkaMon is running without raising it, once the installed MinkaMon is a build with minka-instance (25/11/2026).
 
 ### 14.3 `src/bar.rs`
 New `thermal_pill`, after `updates_pill` (:571-610) and before `health_dot` (:612). It needs no new imports beyond `icons::{WARNING, MODE_FAN, ERROR}`.
