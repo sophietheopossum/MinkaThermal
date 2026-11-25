@@ -777,7 +777,7 @@ fan ok 6800 rpm · fault none · notices none · unjudged 30 d: too_short 31, di
    is always the build the CLI runs.
 
    There is no QML fallback. If nothing is found, name every path tried and exit 1.
-2. **Logging,** when stderr is not a tty: append to `$XDG_STATE_HOME/minka/minka-thermal-ui.log` (default `~/.local/state/minka/`), rolled at 2 MB as `MinkaMon/dist/minkamon:31-42` does. `dup2` it onto stdout and stderr, then write `=== MinkaThermal window starting: <date -Is> ===`.
+2. **Logging,** when stderr is not a tty: append to `$XDG_STATE_HOME/minka/minka-thermal-ui.log` (default `~/.local/state/minka/`), rolled at 2 MB as `packaging/minka-keep` does (one generation kept, as `.log.1`). `dup2` it onto stdout and stderr, then write `=== MinkaThermal window starting: <date -Is> ===`.
 3. **`exec`** the GUI, passing `--page` through.
 
 ### 12.5 `dist/minka-thermal.service`
